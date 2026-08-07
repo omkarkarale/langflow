@@ -8,13 +8,30 @@ import { UseRequestProcessor } from "../../services/request-processor";
 // This type is now updated to allow nulls for mode/toolsCount
 // type getMCPServersResponse = Array<MCPServerInfoType>;
 
-type getMCPServersResponse = Array<MCPServerInfoType>;
+export type getMCPServersResponse = Array<MCPServerInfoType>;
+
+export const mergeMCPServerCounts = (
+  oldData: getMCPServersResponse = [],
+  countsData: getMCPServersResponse,
+): getMCPServersResponse =>
+  oldData.map((server) => {
+    const updated = countsData.find((s) => s.name === server.name);
+    if (!updated) return server;
+
+    return {
+      ...server,
+      ...updated,
+      error: updated.error ?? undefined,
+    };
+  });
 
 export const useGetMCPServers: useQueryFunctionType<
   undefined,
-  getMCPServersResponse
+  getMCPServersResponse,
+  { withCounts?: boolean }
 > = (options) => {
   const { query, queryClient } = UseRequestProcessor();
+  const { withCounts, ...queryOptions } = options ?? {};
 
   // First fetch: action_count=false (fast)
   const responseFn = async () => {
@@ -64,26 +81,23 @@ export const useGetMCPServers: useQueryFunctionType<
   };
 
   const queryResult = query(["useGetMCPServers"], responseFn, {
-    ...options,
+    ...queryOptions,
   });
 
   useEffect(() => {
-    if (queryResult.data && queryResult.data.length > 0) {
+    if (withCounts && queryResult.data && queryResult.data.length > 0) {
       fetchWithCounts().then((countsData) => {
         if (!countsData || countsData.length === 0) return;
         // Merge by name
         queryClient.setQueryData(
           ["useGetMCPServers"],
           (oldData: getMCPServersResponse = []) => {
-            return oldData.map((server) => {
-              const updated = countsData.find((s) => s.name === server.name);
-              return updated ? { ...server, ...updated } : server;
-            });
+            return mergeMCPServerCounts(oldData, countsData);
           },
         );
       });
     }
-  }, [queryResult.data]);
+  }, [withCounts, queryResult.data]);
 
   return queryResult;
 };

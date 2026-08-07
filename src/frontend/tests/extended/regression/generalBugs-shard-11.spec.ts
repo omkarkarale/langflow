@@ -1,17 +1,14 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../../fixtures";
+import { adjustScreenView } from "../../utils/adjust-screen-view";
 import { awaitBootstrapTest } from "../../utils/await-bootstrap-test";
+import { openBlankFlow } from "../../utils/flow/open-blank-flow";
 import { zoomOut } from "../../utils/zoom-out";
 
 test(
   "user should be able to use ComposIO without getting api_key error",
   { tag: ["@release"] },
   async ({ page }) => {
-    await awaitBootstrapTest(page);
-
-    await page.waitForSelector('[data-testid="blank-flow"]', {
-      timeout: 30000,
-    });
-    await page.getByTestId("blank-flow").click();
+    await openBlankFlow(page);
     await page.getByTestId("sidebar-search-input").click();
     await page.getByTestId("sidebar-search-input").fill("composio");
 
@@ -25,10 +22,9 @@ test(
 
     await page.mouse.up();
     await page.mouse.down();
+    await adjustScreenView(page);
 
-    await page.getByTestId("fit_view").click();
-    await page.getByTestId("zoom_out").click();
-    await page.getByTestId("zoom_out").click();
+    await zoomOut(page, 2);
 
     await expect(page.getByText("api_key")).toBeVisible({
       timeout: 3000,
@@ -76,7 +72,7 @@ test(
         targetPosition: { x: 300, y: 300 },
       });
 
-    await page.getByTestId("fit_view").click();
+    await adjustScreenView(page);
 
     await page.getByTestId("title-SearchApi").first().click();
     await page.getByTestId("tool-mode-button").click();
@@ -94,6 +90,6 @@ test(
     await toolCallingAgentInput.hover();
     await page.mouse.up();
 
-    expect(await page.locator(".react-flow__edge-interaction").count()).toBe(1);
+    expect(await page.locator(".react-flow__edge-interaction").count()).toBe(2);
   },
 );

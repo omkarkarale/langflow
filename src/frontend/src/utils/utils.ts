@@ -3,9 +3,11 @@ import clsx, { type ClassValue } from "clsx";
 import moment from "moment";
 import TableAutoCellRender from "@/components/core/parameterRenderComponent/components/tableComponent/components/tableAutoCellRender";
 import TableDropdownCellEditor from "@/components/core/parameterRenderComponent/components/tableComponent/components/tableDropdownCellEditor";
+import i18n from "@/i18n";
 import useAlertStore from "@/stores/alertStore";
 import { type ColumnField, FormatterType } from "@/types/utils/functions";
 import "moment-timezone";
+import type { Cookies } from "react-cookie";
 import { twMerge } from "tailwind-merge";
 import {
   DRAG_EVENTS_CUSTOM_TYPESS,
@@ -27,6 +29,7 @@ import type {
 import type { AllNodeType, NodeDataType } from "../types/flow";
 import type { FlowState } from "../types/tabs";
 import { isErrorLog } from "../types/utils/typeCheckingUtils";
+import { getLocalStorage } from "./local-storage-util";
 import { parseString } from "./stringManipulation";
 
 export function classNames(...classes: Array<string>): string {
@@ -377,7 +380,7 @@ export function getSetFromObject(obj: object, key?: string): Set<string> {
   return set;
 }
 
-export function freezeObject(obj: any) {
+export function freezeObject<T>(obj: T): T {
   if (!obj) return obj;
   return JSON.parse(JSON.stringify(obj));
 }
@@ -392,8 +395,8 @@ export function extractColumnsFromRows(
   rows: object[],
   mode: "intersection" | "union",
   excludeColumns?: Array<string>,
-): ColDef<any>[] {
-  const columnsKeys: { [key: string]: ColDef<any> | ColGroupDef<any> } = {};
+): ColDef[] {
+  const columnsKeys: { [key: string]: ColDef | ColGroupDef } = {};
   if (rows.length === 0) {
     return [];
   }
@@ -408,7 +411,7 @@ export function extractColumnsFromRows(
     }
     for (const row of rows) {
       for (const key in columnsKeys) {
-        if (!row[key]) {
+        if (!(key in row)) {
           delete columnsKeys[key];
         }
       }
@@ -423,7 +426,6 @@ export function extractColumnsFromRows(
           filter: true,
           cellRenderer: TableAutoCellRender,
           suppressAutoSize: true,
-          tooltipField: key,
         };
       }
     }
@@ -449,9 +451,9 @@ export function isThereModal(): boolean {
   return modal.length > 0;
 }
 
-export function messagesSorter(a: any, b: any) {
-  const indexA = MESSAGES_TABLE_ORDER.indexOf(a.field);
-  const indexB = MESSAGES_TABLE_ORDER.indexOf(b.field);
+export function messagesSorter(a: { field?: string }, b: { field?: string }) {
+  const indexA = a.field ? MESSAGES_TABLE_ORDER.indexOf(a.field) : -1;
+  const indexB = b.field ? MESSAGES_TABLE_ORDER.indexOf(b.field) : -1;
 
   // If the field is not in the MESSAGES_TABLE_ORDER, we can place it at the end.
   const orderA = indexA === -1 ? MESSAGES_TABLE_ORDER.length : indexA;
@@ -536,9 +538,11 @@ export function brokenEdgeMessage({
     field: string;
   };
 }) {
-  return `${source.nodeDisplayName}${source.outputDisplayName ? " | " + source.outputDisplayName : ""} -> ${target.displayName}${target.field ? " | " + target.field : ""}`;
+  return `${source.nodeDisplayName}${
+    source.outputDisplayName ? " | " + source.outputDisplayName : ""
+  } -> ${target.displayName}${target.field ? " | " + target.field : ""}`;
 }
-export function FormatColumns(columns: ColumnField[]): ColDef<any>[] {
+export function FormatColumns(columns: ColumnField[]): ColDef[] {
   if (!columns) return [];
   const basic_types = new Set(["date", "number"]);
   const colDefs = columns.map((col) => {
@@ -547,7 +551,10 @@ export function FormatColumns(columns: ColumnField[]): ColDef<any>[] {
       field: col.name,
       sortable: col.sortable,
       filter: col.filterable,
-      context: col.description ? { info: col.description } : {},
+      context: {
+        ...(col.description ? { info: col.description } : {}),
+        ...(col.load_from_db ? { globalVariable: col.load_from_db } : {}),
+      },
       cellClass: col.disable_edit ? "cell-disable-edit" : "",
       hide: col.hidden,
       valueParser: (params: ValueParserParams) => {
@@ -561,10 +568,10 @@ export function FormatColumns(columns: ColumnField[]): ColDef<any>[] {
               newValue,
               context.field_parsers[colDef.field ?? ""],
             );
-          } catch (error: any) {
+          } catch (error) {
             useAlertStore.getState().setErrorData({
-              title: "Error parsing string",
-              list: [String(error.message ?? error)],
+              title: i18n.t("errors.errorParsingString"),
+              list: [String(error instanceof Error ? error.message : error)],
             });
             return oldValue;
           }
@@ -613,6 +620,10 @@ export function FormatColumns(columns: ColumnField[]): ColDef<any>[] {
           newCol.cellClass = "no-border !py-2";
           newCol.type = "boolean";
         } else {
+          if (col.load_from_db) {
+            newCol.editable = false;
+            newCol.cellClass = "no-border !py-0 !pr-0";
+          }
           newCol.cellRenderer = TableAutoCellRender;
         }
       }
@@ -648,7 +659,7 @@ export function generateBackendColumnsFromValue(
 
     // Determine the formatter based on the sample value
     if (rows[0] && rows[0][column.field ?? ""]) {
-      const value = rows[0][column.field ?? ""] as any;
+      const value = rows[0][column.field ?? ""] as unknown;
       if (typeof value === "string") {
         if (isTimeStampString(value)) {
           newColumn.formatter = FormatterType.date;
@@ -794,7 +805,7 @@ export const isStringArray = (value: unknown): value is string[] => {
 export const stringToBool = (str) => (str === "false" ? false : true);
 
 // Filter out null/undefined options
-export const filterNullOptions = (opts: any[]): any[] => {
+export const filterNullOptions = <T>(opts: T[]): T[] => {
   return opts.filter((opt) => opt !== null && opt !== undefined);
 };
 
@@ -823,7 +834,8 @@ export interface CookieOptions {
   maxAge?: number;
   expires?: Date;
   secure?: boolean;
-  sameSite?: "Strict" | "Lax" | "None";
+  sameSite?: "strict" | "lax" | "none";
+  httpOnly?: boolean;
 }
 
 /**
@@ -1001,4 +1013,32 @@ export const stripReleaseStageFromVersion = (version: string): string => {
     }
   }
   return version;
+};
+
+export const getAuthCookie = (cookies: Cookies, tokenName: string) => {
+  return cookies.get(tokenName);
+};
+
+export const setAuthCookie = (
+  cookies: Cookies,
+  tokenName: string,
+  value: string,
+) => {
+  // Only use secure flag if the connection is HTTPS
+  const isSecure =
+    typeof window !== "undefined" && window.location.protocol === "https:";
+
+  cookies.set(tokenName, value, {
+    path: "/",
+    secure: isSecure,
+    sameSite: isSecure ? "strict" : "lax",
+  });
+};
+
+export const getBooleanFromStorage = (
+  key: string,
+  defaultValue: boolean,
+): boolean => {
+  const stored = getLocalStorage(key);
+  return stored === null ? defaultValue : stored === "true";
 };

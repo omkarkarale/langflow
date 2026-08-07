@@ -1,5 +1,8 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../../fixtures";
+import { adjustScreenView } from "../../utils/adjust-screen-view";
 import { awaitBootstrapTest } from "../../utils/await-bootstrap-test";
+
+import { TEXTS } from "../../utils/constants/texts";
 
 test(
   "user should be able to use duckduckgo search component",
@@ -26,8 +29,7 @@ test(
           .getByTestId("add-component-button-duckduckgo-search")
           .click();
       });
-
-    await page.getByTestId("fit_view").click();
+    await adjustScreenView(page);
 
     await page
       .getByTestId("popover-anchor-input-input_value")
@@ -36,7 +38,9 @@ test(
     await page.getByTestId("button_run_duckduckgo search").click();
 
     const result = await Promise.race([
-      page.waitForSelector("text=built successfully", { timeout: 30000 }),
+      page.waitForSelector(`text=${TEXTS.toastBuiltSuccessfully}`, {
+        timeout: 30000,
+      }),
       page.waitForSelector("text=ratelimit", { timeout: 30000 }),
     ]);
 
@@ -47,17 +51,21 @@ test(
         ) ?? false;
 
       await page
-        .getByTestId("output-inspection-dataframe-duckduckgosearchcomponent")
+        .getByTestId("output-inspection-table-duckduckgosearchcomponent")
         .first()
         .click();
 
       if (isBuiltSuccessfully) {
         await page.getByRole("gridcell").first().click();
-        const searchResults = await page.getByPlaceholder("Empty").inputValue();
+        const searchResults = await page
+          .getByPlaceholder(TEXTS.placeholderEmpty)
+          .inputValue();
         expect(searchResults.length).toBeGreaterThan(10);
         expect(searchResults.toLowerCase()).toContain("langflow");
       } else {
-        const value = await page.getByPlaceholder("Empty").inputValue();
+        const value = await page
+          .getByPlaceholder(TEXTS.placeholderEmpty)
+          .inputValue();
         expect(value.length).toBeGreaterThan(10);
         expect(value.toLowerCase()).toContain("ratelimit");
       }

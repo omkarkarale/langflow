@@ -9,6 +9,7 @@ import type { RangeSpecType } from "@/types/components";
 import type { ColumnField } from "@/types/utils/functions";
 
 // Base type for RefreshParameterComponent children
+// biome-ignore lint/suspicious/noExplicitAny: legacy
 export type BaseInputProps<valueType = any> = {
   id: string;
   value: valueType;
@@ -17,24 +18,31 @@ export type BaseInputProps<valueType = any> = {
   disabled: boolean;
   nodeClass?: APIClassType;
   helperText?: string;
+  // biome-ignore lint/suspicious/noExplicitAny: legacy
   handleNodeClass?: (value: any, code?: string, type?: string) => void;
   readonly?: boolean;
   placeholder?: string;
   isToolMode?: boolean;
   tooltip?: string;
+  // biome-ignore lint/suspicious/noExplicitAny: legacy
   metadata?: any;
   nodeId?: string;
   nodeInformationMetadata?: NodeInfoType;
   hasRefreshButton?: boolean;
+  // biome-ignore lint/suspicious/noExplicitAny: legacy
   helperMetadata?: any;
+  // biome-ignore lint/suspicious/noExplicitAny: legacy
   options?: any[];
   searchCategory?: string[];
   buttonMetadata?: { variant?: string; icon?: string };
   connectionLink?: string;
+  showParameter?: boolean;
+  inspectionPanel?: boolean;
 };
 
 // Generic type for composing input props
 export type InputProps<
+  // biome-ignore lint/suspicious/noExplicitAny: legacy
   valueType = any,
   T = {},
   _U extends object = object,
@@ -57,6 +65,9 @@ export type ToolsComponentType = {
   button_description?: string;
   isAction?: boolean;
   template?: APITemplateType;
+  hideButton?: boolean;
+  open?: boolean;
+  setOpen?: (open: boolean) => void;
 };
 
 export type FloatComponentType = {
@@ -65,6 +76,7 @@ export type FloatComponentType = {
 
 export type IntComponentType = {
   rangeSpec: RangeSpecType;
+  name?: string;
 };
 export type ToggleComponentType = {
   size?: "small" | "medium" | "large";
@@ -80,6 +92,7 @@ export type FileComponentType = {
 
 export type PromptAreaComponentType = {
   field_name?: string;
+  isDoubleBrackets?: boolean;
 };
 
 export type LinkComponentType = {
@@ -88,6 +101,7 @@ export type LinkComponentType = {
 };
 
 export type KeyPairListComponentType = {
+  // biome-ignore lint/suspicious/noExplicitAny: legacy
   value: any;
   isList?: boolean;
 };
@@ -98,6 +112,7 @@ export type StrRenderComponentType = {
   display_name: string;
   nodeId: string;
   nodeClass: APIClassType;
+  // biome-ignore lint/suspicious/noExplicitAny: legacy
   handleNodeClass: (value: any, code?: string, type?: string) => void;
 };
 
@@ -111,10 +126,15 @@ export type DropDownComponentType = {
   combobox?: boolean;
   options: string[];
   name: string;
+  // biome-ignore lint/suspicious/noExplicitAny: legacy
   dialogInputs?: any;
+  // biome-ignore lint/suspicious/noExplicitAny: legacy
+  externalOptions?: any;
+  // biome-ignore lint/suspicious/noExplicitAny: legacy
   optionsMetaData?: any[];
   nodeId: string;
   nodeClass: APIClassType;
+  // biome-ignore lint/suspicious/noExplicitAny: legacy
   handleNodeClass: (value: any, code?: string, type?: string) => void;
   toggle?: boolean;
   toggleValue?: boolean;
@@ -140,6 +160,7 @@ export type InputGlobalComponentType = {
 export type MultiselectComponentType = {
   options: string[];
   combobox?: boolean;
+  hideOnSelection?: boolean;
 };
 
 export type TabComponentType = {

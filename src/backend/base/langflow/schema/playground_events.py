@@ -4,13 +4,12 @@ from datetime import datetime, timezone
 from typing import Annotated, Literal
 from uuid import UUID
 
+from lfx.schema.content_block import ContentBlock
+from lfx.schema.content_types import ErrorContent
+from lfx.schema.properties import Properties
+from lfx.schema.validators import timestamp_to_str_validator
+from lfx.utils.constants import MESSAGE_SENDER_USER
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
-
-from langflow.schema.content_block import ContentBlock
-from langflow.schema.content_types import ErrorContent
-from langflow.schema.properties import Properties
-from langflow.schema.validators import timestamp_to_str_validator
-from langflow.utils.constants import MESSAGE_SENDER_USER
 
 
 class PlaygroundEvent(BaseModel):
@@ -22,7 +21,7 @@ class PlaygroundEvent(BaseModel):
     files: list[str] | None = Field(default=None)
     text: str | None = Field(default=None)
     timestamp: Annotated[str, timestamp_to_str_validator] = Field(
-        default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S %Z")
+        default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f %Z")
     )
     id_: UUID | str | None = Field(default=None, alias="id")
 
@@ -81,7 +80,7 @@ class TokenEvent(BaseModel):
     chunk: str = Field(...)
     id: UUID | str | None = Field(alias="id")
     timestamp: Annotated[str, timestamp_to_str_validator] = Field(
-        default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S %Z")
+        default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f %Z")
     )
 
 

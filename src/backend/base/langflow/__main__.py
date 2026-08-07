@@ -1,3 +1,24 @@
+# macOS Objective-C fork-safety guard.
+#
+# Gunicorn forks workers; on Darwin, Objective-C runtime fork-safety checks
+# can SIGSEGV workers unless OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES is set
+# in the OS environment *before* Python starts (setting it in Python is too
+# late — see langflow_launcher.py for the same pattern).
+#
+# The `langflow` console script routes through langflow_launcher.py which
+# handles this. This guard catches the bypass paths (`python -m langflow`,
+# `uv run python -m langflow`, etc.) so they're not silent footguns. Only
+# fires for direct CLI invocation; ordinary `import langflow.__main__` is
+# unaffected.
+if __name__ == "__main__":
+    import os as _os
+    import platform as _platform
+    import sys as _sys
+
+    if _platform.system() == "Darwin" and not _os.environ.get("OBJC_DISABLE_INITIALIZE_FORK_SAFETY"):
+        _os.environ["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
+        _os.execv(_sys.executable, [_sys.executable, "-m", "langflow.__main__", *_sys.argv[1:]])  # noqa: S606
+
 import asyncio
 import inspect
 import os
@@ -8,6 +29,7 @@ import sys
 import time
 import warnings
 from contextlib import suppress
+from functools import partial
 from ipaddress import ip_address
 from pathlib import Path
 
@@ -15,7 +37,11 @@ import click
 import httpx
 import typer
 from dotenv import load_dotenv
+from fastapi import HTTPException
 from httpx import HTTPError
+from jwt import InvalidTokenError
+from lfx.log.logger import configure, logger
+from lfx.services.settings.constants import DEFAULT_SUPERUSER
 from multiprocess import cpu_count
 from multiprocess.context import Process
 from packaging import version as pkg_version
@@ -27,19 +53,33 @@ from sqlmodel import select
 
 from langflow.cli.progress import create_langflow_progress
 from langflow.initial_setup.setup import get_or_create_default_folder
-from langflow.logging.logger import configure, logger
 from langflow.main import setup_app
-from langflow.services.database.utils import session_getter
-from langflow.services.deps import get_db_service, get_settings_service, session_scope
-from langflow.services.settings.constants import DEFAULT_SUPERUSER
-from langflow.services.utils import initialize_services
+from langflow.services.auth.utils import get_current_user_from_access_token
+from langflow.services.database.models.api_key.crud import check_key
+from langflow.services.database.service import UnsupportedPostgreSQLVersionError, check_postgresql_version_sync
+from langflow.services.deps import get_db_service, get_settings_service, is_settings_service_initialized, session_scope
+from langflow.services.utils import get_auto_login_superuser_password, initialize_services
 from langflow.utils.version import fetch_latest_version, get_version_info
 from langflow.utils.version import is_pre_release as langflow_is_pre_release
 
-# Initialize console with Windows-safe settings
-console = Console(legacy_windows=True, emoji=False) if platform.system() == "Windows" else Console()
-
 app = typer.Typer(no_args_is_help=True)
+console = Console()
+if platform.system() == "Windows":
+    console = Console(legacy_windows=True, emoji=False)
+
+# Add LFX commands as a sub-app
+try:
+    from lfx.cli.commands import serve_command
+    from lfx.cli.run import run as lfx_run
+
+    lfx_app = typer.Typer(name="lfx", help="Langflow Executor commands")
+    lfx_app.command(name="serve", help="Serve a flow as an API", no_args_is_help=True)(serve_command)
+    lfx_app.command(name="run", help="Run a flow directly", no_args_is_help=True)(lfx_run)
+
+    app.add_typer(lfx_app, name="lfx")
+except ImportError:
+    # LFX not available, skip adding the sub-app
+    pass
 
 
 class ProcessManager:
@@ -114,6 +154,119 @@ def get_number_of_workers(workers=None):
     return workers
 
 
+# Platforms where `langflow run` bypasses Gunicorn and runs uvicorn directly
+# against a pre-built FastAPI app object. On Linux we use Gunicorn (multi-worker
+# via fork()); on Windows and macOS forking is unsafe (Windows lacks fork; macOS
+# fork-with-threads + libdispatch / asyncio kqueue state crashes workers).
+DIRECT_UVICORN_PLATFORMS: tuple[str, ...] = ("Windows", "Darwin")
+
+
+def use_direct_uvicorn(system: str | None = None) -> bool:
+    """Return True iff this platform launches with uvicorn directly (no Gunicorn)."""
+    return (system or platform.system()) in DIRECT_UVICORN_PLATFORMS
+
+
+def clamp_uvicorn_workers(requested: int, *, system: str | None = None) -> int:
+    """Clamp ``workers`` to 1 when running uvicorn against a pre-built app object.
+
+    uvicorn refuses to spawn multiple workers from an app *object* (it needs an
+    import string), so on the direct-uvicorn platforms we cap workers at 1 and
+    warn — preferable to uvicorn's own ``sys.exit(1)`` with a generic message.
+    On Linux this is a no-op since Gunicorn handles multi-worker.
+    """
+    if requested > 1 and use_direct_uvicorn(system):
+        logger.warning(
+            "Direct-uvicorn startup on %s does not support workers > 1 "
+            "(uvicorn requires an import string for multi-worker mode). "
+            "Falling back to a single worker; requested=%d.",
+            system or platform.system(),
+            requested,
+        )
+        return 1
+    return requested
+
+
+def build_direct_uvicorn_kwargs(
+    *,
+    host: str,
+    port: int,
+    log_level: str | None,
+    workers: int,
+    loop: str,
+    ssl_cert_file_path: str | None,
+    ssl_key_file_path: str | None,
+    system: str | None = None,
+    trust_proxy: bool = False,
+) -> dict:
+    """Build the kwargs dict for ``uvicorn.run(app, **kwargs)`` on Win/macOS.
+
+    Pins the option set (workers clamp, TLS certs, loop type) in one place so
+    the launch site stays a single call and so tests can assert that things
+    like TLS cert/key pass through. Mirrors the option set used on the
+    Gunicorn (Linux) path so platform parity does not drift again.
+
+    ``trust_proxy=False`` (default) passes ``forwarded_allow_ips=""`` so
+    uvicorn's ProxyHeadersMiddleware trusts no source for X-Forwarded-For,
+    preventing IP-spoofing attacks against the login rate limit.
+    ``trust_proxy=True`` passes ``"*"`` for deployments behind a trusted proxy.
+    """
+    return {
+        "host": host,
+        "port": port,
+        "log_level": log_level,
+        "reload": False,
+        "workers": clamp_uvicorn_workers(workers, system=system),
+        "loop": loop,
+        "ssl_certfile": ssl_cert_file_path,
+        "ssl_keyfile": ssl_key_file_path,
+        "forwarded_allow_ips": "*" if trust_proxy else "",
+    }
+
+
+def ensure_multi_worker_safe(num_workers: int) -> None:
+    """Refuse to start with multiple workers when the job queue is worker-local.
+
+    The default JobQueueService keeps build queues in process-local memory.
+    POLLING and STREAMING event delivery rely on a follow-up
+    ``GET /api/v1/build/<job_id>/events`` request after the initial
+    ``POST /api/v1/build/.../flow``; Gunicorn round-robins those two requests
+    across workers, so the polling worker finds no queue and returns
+    "Job queue not found for job_id" roughly 45-66% of the time under load.
+
+    ``event_delivery=direct`` is the exception: the POST endpoint streams events
+    back on the same request that started the build, so the build and event
+    consumption stay on a single worker and never cross worker boundaries.
+    Operators who only need direct delivery should run with ``--workers 1`` or
+    configure a shared queue anyway; this check refuses to start because the
+    process cannot know which delivery mode every future client will pick.
+
+    Skipped entirely when ``LANGFLOW_JOB_QUEUE_TYPE=redis`` is configured —
+    Redis-backed queues share state across workers and support every delivery
+    mode, so the race the check guards against cannot occur.
+
+    Only called on the Gunicorn (Linux) path — the direct-uvicorn path on
+    Windows/macOS clamps workers to 1, so the race cannot occur there.
+    """
+    if num_workers <= 1:
+        return
+    if get_settings_service().settings.job_queue_type == "redis":
+        return
+    msg = (
+        f"Refusing to start with {num_workers} workers and the default in-memory "
+        "job queue. POLLING and STREAMING event delivery fail with 'Job not found' "
+        "roughly half the time because the build queue lives in one worker's "
+        "memory and the follow-up GET /api/v1/build/<job_id>/events request lands "
+        "on a different worker. Pick one of:\n"
+        "  * Configure a shared job queue: LANGFLOW_JOB_QUEUE_TYPE=redis. Works "
+        "for every event_delivery mode.\n"
+        "  * Run with --workers 1. Single worker, no cross-worker routing.\n"
+        "Note: event_delivery=direct works in multi-worker because the POST "
+        "endpoint streams events back inline, but every client must opt into "
+        "direct delivery; the server cannot enforce that at startup."
+    )
+    raise RuntimeError(msg)
+
+
 def display_results(results) -> None:
     """Display the results of the migration."""
     for table_results in results:
@@ -140,9 +293,6 @@ def set_var_for_macos_issue() -> None:
         import os
 
         os.environ["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
-        # https://stackoverflow.com/questions/75747888/uwsgi-segmentation-fault-with-flask-python-app-behind-nginx-after-running-for-2 # noqa: E501
-        os.environ["no_proxy"] = "*"  # to avoid error with gunicorn
-        logger.debug("Set OBJC_DISABLE_INITIALIZE_FORK_SAFETY to YES to avoid error")
 
 
 def wait_for_server_ready(host, port, protocol) -> None:
@@ -152,6 +302,9 @@ def wait_for_server_ready(host, port, protocol) -> None:
 
     status_code = 0
     while status_code != httpx.codes.OK:
+        # If the server process died (e.g. database version check failed), stop waiting.
+        if process_manager.webapp_process and not process_manager.webapp_process.is_alive():
+            sys.exit(process_manager.webapp_process.exitcode or 1)
         try:
             status_code = httpx.get(
                 f"{protocol}://{health_check_host}:{port}/health",
@@ -160,7 +313,7 @@ def wait_for_server_ready(host, port, protocol) -> None:
         except HTTPError:
             time.sleep(1)
         except Exception:  # noqa: BLE001
-            logger.opt(exception=True).debug("Error while waiting for the server to become ready.")
+            logger.debug("Error while waiting for the server to become ready.", exc_info=True)
             time.sleep(1)
 
 
@@ -252,17 +405,19 @@ def run(
 ) -> None:
     """Run Langflow."""
     if env_file:
+        if is_settings_service_initialized():
+            err = (
+                "Settings service is already initialized. This indicates potential race conditions "
+                "with settings initialization. Ensure the settings service is not created during "
+                "module loading."
+            )
+            # i.e. ensures the env file is loaded before the settings service is initialized
+            raise ValueError(err)
         load_dotenv(env_file, override=True)
 
-    # Set default log level if not provided
-    log_level_str = "info" if log_level is None else log_level.lower()
-
-    # Must set as env var for child process to pick up
-    env_log_level = os.environ.get("LANGFLOW_LOG_LEVEL")
-    if env_log_level is None:
-        os.environ["LANGFLOW_LOG_LEVEL"] = log_level_str
-    else:
-        os.environ["LANGFLOW_LOG_LEVEL"] = env_log_level.lower()
+    # Set and normalize log level, with precedence: cli > env > default
+    log_level = (log_level or os.environ.get("LANGFLOW_LOG_LEVEL") or "info").lower()
+    os.environ["LANGFLOW_LOG_LEVEL"] = log_level
 
     configure(log_level=log_level, log_file=log_file, log_rotation=log_rotation)
 
@@ -297,7 +452,7 @@ def run(
                 settings_service.set(arg, values[arg])
             elif hasattr(settings_service.auth_settings, arg):
                 settings_service.auth_settings.set(arg, values[arg])
-            logger.debug(f"Loading config from cli parameter '{arg}': '{values[arg]}'")
+            logger.debug("Loading config from cli parameter '%s'", arg)
 
         # Get final values from settings
         host = settings_service.settings.host
@@ -316,14 +471,32 @@ def run(
         static_files_dir: Path | None = Path(frontend_path) if frontend_path else None
 
     # Step 2: Starting Core Services
+    app = None
+    app_factory = None
     with progress.step(2):
-        app = setup_app(static_files_dir=static_files_dir, backend_only=backend_only)
+        # See DIRECT_UVICORN_PLATFORMS for the rationale (no fork on Win/macOS).
+        if use_direct_uvicorn():
+            app = setup_app(static_files_dir=static_files_dir, backend_only=bool(backend_only))
+        else:
+            app_factory = partial(setup_app, static_files_dir=static_files_dir, backend_only=bool(backend_only))
 
     # Step 3: Connecting Database (this happens inside setup_app via dependencies)
     with progress.step(3):
+        # Pre-flight: fail fast if PostgreSQL version is too old, before
+        # spawning any server process (avoids messy lifespan / worker errors).
+        database_url = settings_service.settings.database_url
+        if database_url:
+            try:
+                check_postgresql_version_sync(database_url)
+            except UnsupportedPostgreSQLVersionError:
+                sys.exit(1)
+
         # check if port is being used
         if is_port_in_use(port, host):
             port = get_free_port(port)
+
+        # Store the runtime-detected port in settings (temporary until strict port enforcement)
+        get_settings_service().settings.runtime_port = port
 
         protocol = "https" if ssl_cert_file_path and ssl_key_file_path else "http"
 
@@ -337,40 +510,78 @@ def run(
             pass  # Starter projects are added during app startup
 
     # Step 6: Launching Langflow
-    if platform.system() == "Windows":
+    if use_direct_uvicorn():
+        # LANGFLOW_GUNICORN_PRELOAD is a Gunicorn-only knob: it triggers fork-safe
+        # master-process preload so workers inherit state via copy-on-write. On
+        # the direct-uvicorn path there is no master/worker split and no fork,
+        # so the env var is silently inert. Warn loudly so users diagnosing
+        # "preload isn't doing anything on my Mac" don't have to read source.
+        if os.environ.get("LANGFLOW_GUNICORN_PRELOAD", "false").lower() == "true":
+            logger.warning(
+                "LANGFLOW_GUNICORN_PRELOAD=true is ignored on %s: this platform "
+                "uses single-process uvicorn (no fork), so master preload / "
+                "copy-on-write inheritance does not apply.",
+                platform.system(),
+            )
+
         with progress.step(6):
             import uvicorn
+
+            if app is None:
+                msg = "Direct-uvicorn startup (Windows/macOS) requires a pre-built FastAPI application."
+                raise RuntimeError(msg)
 
             # Print summary and banner before starting the server, since uvicorn is a blocking call.
             # We _may_ be able to subprocess, but with window's spawn behavior, we'd have to move all
             # non-picklable code to the subprocess.
             progress.print_summary()
-            print_banner(host, port, protocol)
+            print_banner(str(host), int(port or 7860), protocol)
 
-        # Blocking call, so must be outside of the progress step
+        from langflow.helpers.windows_postgres_helper import LANGFLOW_DATABASE_URL, POSTGRESQL_PREFIXES
+
+        db_url = os.environ.get(LANGFLOW_DATABASE_URL, "")
+        loop_type = "asyncio"
+        if (
+            platform.system() == "Windows"
+            and db_url
+            and any(db_url.startswith(prefix) for prefix in POSTGRESQL_PREFIXES)
+        ):
+            loop_type = "none"  # Preserve pre-configured WindowsSelectorEventLoopPolicy
+
         uvicorn.run(
             app,
-            host=host,
-            port=port,
-            log_level=log_level,
-            reload=False,
-            workers=get_number_of_workers(workers),
-            loop="asyncio",
+            **build_direct_uvicorn_kwargs(
+                host=host,
+                port=port,
+                log_level=log_level,
+                workers=get_number_of_workers(workers),
+                loop=loop_type,
+                ssl_cert_file_path=ssl_cert_file_path,
+                ssl_key_file_path=ssl_key_file_path,
+                trust_proxy=get_settings_service().settings.rate_limit_trust_proxy,
+            ),
         )
     else:
         with progress.step(6):
             # Use Gunicorn with LangflowUvicornWorker for non-Windows systems
             from langflow.server import LangflowApplication
 
+            if app_factory is None:
+                msg = "Gunicorn startup requires an application factory."
+                raise RuntimeError(msg)
+
+            num_workers = get_number_of_workers(workers)
+            ensure_multi_worker_safe(num_workers)
             options = {
                 "bind": f"{host}:{port}",
-                "workers": get_number_of_workers(workers),
+                "workers": num_workers,
                 "timeout": worker_timeout,
                 "certfile": ssl_cert_file_path,
                 "keyfile": ssl_key_file_path,
-                "log_level": log_level.lower(),
+                "log_level": log_level.lower() if log_level is not None else "info",
+                "preload_app": os.environ.get("LANGFLOW_GUNICORN_PRELOAD", "false").lower() == "true",
             }
-            server = LangflowApplication(app, options)
+            server = LangflowApplication(app_factory, options)
 
             # Start the webapp process
             process_manager.webapp_process = Process(target=server.run)
@@ -380,7 +591,7 @@ def run(
 
         # Print summary and banner after server is ready
         progress.print_summary()
-        print_banner(host, port, protocol)
+        print_banner(str(host), int(port or 7860), protocol)
 
         # Handle browser opening
         if open_browser and not backend_only:
@@ -632,41 +843,163 @@ def print_banner(host: str, port: int, protocol: str) -> None:
 
 @app.command()
 def superuser(
-    username: str = typer.Option(..., prompt=True, help="Username for the superuser."),
-    password: str = typer.Option(..., prompt=True, hide_input=True, help="Password for the superuser."),
+    username: str = typer.Option(
+        None, help="Username for the superuser. Defaults to the configured AUTO_LOGIN superuser."
+    ),
+    password: str = typer.Option(
+        None, help="Password for the superuser. Ignored when AUTO_LOGIN generates the bootstrap password."
+    ),
     log_level: str = typer.Option("error", help="Logging level.", envvar="LANGFLOW_LOG_LEVEL"),
+    auth_token: str = typer.Option(
+        None, help="Authentication token of existing superuser.", envvar="LANGFLOW_SUPERUSER_TOKEN"
+    ),
 ) -> None:
-    """Create a superuser."""
+    """Create a superuser.
+
+    When AUTO_LOGIN is enabled, uses configured or generated bootstrap credentials.
+    In production mode, requires authentication.
+    """
     configure(log_level=log_level)
-    db_service = get_db_service()
 
-    async def _create_superuser():
-        await initialize_services()
-        async with session_getter(db_service) as session:
-            from langflow.services.auth.utils import create_super_user
+    asyncio.run(_create_superuser(username, password, auth_token))
 
-            if await create_super_user(db=session, username=username, password=password):
-                # Verify that the superuser was created
-                from langflow.services.database.models.user.model import User
 
-                stmt = select(User).where(User.username == username)
-                user: User = (await session.exec(stmt)).first()
-                if user is None or not user.is_superuser:
-                    typer.echo("Superuser creation failed.")
-                    return
-                # Now create the first folder for the user
-                result = await get_or_create_default_folder(session, user.id)
-                if result:
-                    typer.echo("Default folder created successfully.")
-                else:
-                    msg = "Could not create default folder."
-                    raise RuntimeError(msg)
-                typer.echo("Superuser created successfully.")
+async def _create_superuser(username: str, password: str, auth_token: str | None):
+    """Create a superuser."""
+    await initialize_services(skip_superuser_setup=True)
 
-            else:
+    settings_service = get_settings_service()
+    # Check if superuser creation via CLI is enabled
+    if not settings_service.auth_settings.ENABLE_SUPERUSER_CLI:
+        typer.echo("Error: Superuser creation via CLI is disabled.")
+        typer.echo("Set LANGFLOW_ENABLE_SUPERUSER_CLI=true to enable this feature.")
+        raise typer.Exit(1)
+
+    if settings_service.auth_settings.AUTO_LOGIN:
+        username = getattr(settings_service.auth_settings, "SUPERUSER", None) or DEFAULT_SUPERUSER
+    else:
+        # Production mode - prompt for credentials if not provided
+        if not username:
+            username = typer.prompt("Username")
+        if not password:
+            password = typer.prompt("Password", hide_input=True)
+
+    from langflow.services.database.models.user.crud import get_all_superusers
+
+    existing_superusers = []
+    async with session_scope() as session:
+        existing_superusers = await get_all_superusers(session)
+    is_first_setup = len(existing_superusers) == 0
+
+    # If AUTO_LOGIN is true, only allow default superuser creation
+    if settings_service.auth_settings.AUTO_LOGIN:
+        if not is_first_setup:
+            typer.echo("Error: Cannot create additional superusers when AUTO_LOGIN is enabled.")
+            typer.echo("AUTO_LOGIN mode is for development with only the default superuser.")
+            typer.echo("To create additional superusers:")
+            typer.echo("1. Set LANGFLOW_AUTO_LOGIN=false")
+            typer.echo("2. Run this command again with --auth-token")
+            raise typer.Exit(1)
+
+        password = get_auto_login_superuser_password(settings_service.auth_settings)
+        typer.echo(f"AUTO_LOGIN enabled. Creating default superuser '{username}'...")
+        # Do not echo the default password to avoid exposing it in logs.
+    # AUTO_LOGIN is false - production mode
+    elif is_first_setup:
+        typer.echo("No superusers found. Creating first superuser...")
+    else:
+        # Authentication is required in production mode
+        if not auth_token:
+            typer.echo("Error: Creating a superuser requires authentication.")
+            typer.echo("Please provide --auth-token with a valid superuser API key or JWT token.")
+            typer.echo("To get a token, use: `uv run langflow api_key`")
+            raise typer.Exit(1)
+
+        # Validate the auth token
+        try:
+            auth_user = None
+            async with session_scope() as session:
+                # Try JWT first
+                user = None
+                try:
+                    user = await get_current_user_from_access_token(auth_token, session)
+                except (InvalidTokenError, HTTPException):
+                    # Try API key
+                    api_key_result = await check_key(session, auth_token)
+                    if api_key_result and hasattr(api_key_result, "is_superuser"):
+                        user = api_key_result
+                auth_user = user
+
+            if not auth_user or not auth_user.is_superuser:
+                typer.echo(
+                    "Error: Invalid token or insufficient privileges. Only superusers can create other superusers."
+                )
+                raise typer.Exit(1)
+        except typer.Exit:
+            raise  # Re-raise typer.Exit without wrapping
+        except Exception as e:  # noqa: BLE001
+            typer.echo(f"Error: Authentication failed - {e!s}")
+            raise typer.Exit(1) from None
+
+    # Auth complete, create the superuser
+    async with session_scope() as session:
+        from langflow.services.deps import get_auth_service
+
+        auth = get_auth_service()
+        if await auth.create_super_user(username, password, db=session):
+            # Verify that the superuser was created
+            from langflow.services.database.models.user.model import User
+
+            stmt = select(User).where(User.username == username)
+            created_user: User = (await session.exec(stmt)).first()
+            if created_user is None or not created_user.is_superuser:
                 typer.echo("Superuser creation failed.")
+                return
+            # Now create the first folder for the user
+            result = await get_or_create_default_folder(session, created_user.id)
+            if result:
+                typer.echo("Default folder created successfully.")
+            else:
+                msg = "Could not create default folder."
+                raise RuntimeError(msg)
 
-    asyncio.run(_create_superuser())
+            # Log the superuser creation for audit purposes
+            logger.warning(
+                f"SECURITY AUDIT: New superuser '{username}' created via CLI command"
+                + (" by authenticated user" if auth_token else " (first-time setup)")
+            )
+            typer.echo("Superuser created successfully.")
+
+        else:
+            logger.error(f"SECURITY AUDIT: Failed attempt to create superuser '{username}' via CLI")
+            typer.echo("Superuser creation failed.")
+
+
+@app.command(name="migrate-mcp")
+def migrate_mcp(
+    log_level: str = typer.Option("info", help="Logging level.", envvar="LANGFLOW_LOG_LEVEL"),
+    dry_run: bool = typer.Option(default=False, help="Report what would be imported without writing."),  # noqa: FBT001
+) -> None:
+    """Import existing per-user MCP config files (_mcp_servers_<id>.json) into the mcp_server table.
+
+    This also runs automatically on startup; use this command to run or preview it on demand.
+    It is idempotent and never deletes the legacy files.
+    """
+    configure(log_level=log_level)
+    asyncio.run(_migrate_mcp(dry_run=dry_run))
+
+
+async def _migrate_mcp(*, dry_run: bool) -> None:
+    from langflow.api.utils.mcp.backfill import backfill_mcp_servers_from_files
+
+    await initialize_services()
+    async with session_scope() as session:
+        summary = await backfill_mcp_servers_from_files(session, dry_run=dry_run)
+    verb = "would import" if dry_run else "imported"
+    typer.echo(
+        f"MCP migration complete: {verb} {summary['imported']} server(s) across "
+        f"{summary['users']} user(s) (skipped {summary['skipped']}, errors {summary['errors']})."
+    )
 
 
 # command to copy the langflow database from the cache to the current directory
@@ -749,17 +1082,22 @@ def api_key(
         settings_service = get_settings_service()
         auth_settings = settings_service.auth_settings
         if not auth_settings.AUTO_LOGIN:
+            # TODO: Allow non-auto-login users to create API keys via CLI
             typer.echo("Auto login is disabled. API keys cannot be created through the CLI.")
             return None
 
         async with session_scope() as session:
             from langflow.services.database.models.user.model import User
 
-            stmt = select(User).where(User.username == DEFAULT_SUPERUSER)
+            superuser_username = auth_settings.SUPERUSER or DEFAULT_SUPERUSER
+            stmt = select(User).where(
+                User.username == superuser_username,
+                User.is_superuser == True,  # noqa: E712
+            )
             superuser = (await session.exec(stmt)).first()
             if not superuser:
                 typer.echo(
-                    "Default superuser not found. This command requires a superuser and AUTO_LOGIN to be enabled."
+                    "Auto-login superuser not found. This command requires a superuser and AUTO_LOGIN to be enabled."
                 )
                 return None
             from langflow.services.database.models.api_key.crud import create_api_key, delete_api_key
@@ -768,12 +1106,10 @@ def api_key(
             stmt = select(ApiKey).where(ApiKey.user_id == superuser.id)
             api_key = (await session.exec(stmt)).first()
             if api_key:
-                await delete_api_key(session, api_key.id)
+                await delete_api_key(session, api_key.id, superuser.id)
 
             api_key_create = ApiKeyCreate(name="CLI")
-            unmasked_api_key = await create_api_key(session, api_key_create, user_id=superuser.id)
-            await session.commit()
-            return unmasked_api_key
+            return await create_api_key(session, api_key_create, user_id=superuser.id)
 
     unmasked_api_key = asyncio.run(aapi_key())
     # Create a banner to display the API key and tell the user it won't be shown again
@@ -807,15 +1143,23 @@ def version_option(
 
 def api_key_banner(unmasked_api_key) -> None:
     is_mac = platform.system() == "Darwin"
-    import pyperclip
+    clipboard_msg = ""
+    try:
+        import pyperclip
 
-    pyperclip.copy(unmasked_api_key.api_key)
+        pyperclip.copy(unmasked_api_key.api_key)
+        clipboard_msg = (
+            f"\nThe API key has been copied to your clipboard. [bold]{['Ctrl', 'Cmd'][is_mac]} + V[/bold] to paste it."
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Clipboard access is best-effort: pyperclip raises in headless/Docker/SSH environments
+        # where no clipboard mechanism is available. Log and continue so the key is still displayed.
+        logger.debug(f"Could not copy API key to clipboard: {exc}")
     panel = Panel(
         f"[bold]API Key Created Successfully:[/bold]\n\n"
         f"[bold blue]{unmasked_api_key.api_key}[/bold blue]\n\n"
         "This is the only time the API key will be displayed. \n"
-        "Make sure to store it in a secure location. \n\n"
-        f"The API key has been copied to your clipboard. [bold]{['Ctrl', 'Cmd'][is_mac]} + V[/bold] to paste it.",
+        f"Make sure to store it in a secure location.{clipboard_msg}",
         box=box.ROUNDED,
         border_style="blue",
         expand=False,

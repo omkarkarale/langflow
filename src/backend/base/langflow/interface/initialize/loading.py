@@ -1,24 +1,25 @@
 from __future__ import annotations
 
 import inspect
-import os
 import warnings
 from typing import TYPE_CHECKING, Any
 
 import orjson
-from loguru import logger
+from lfx.custom.eval import eval_custom_component_code
+from lfx.log.logger import logger
+from lfx.utils.env_var_security import safe_getenv
 from pydantic import PydanticDeprecatedSince20
 
-from langflow.custom.eval import eval_custom_component_code
 from langflow.schema.artifact import get_artifact_type, post_process_raw
 from langflow.schema.data import Data
 from langflow.services.deps import get_tracing_service, session_scope
 
 if TYPE_CHECKING:
-    from langflow.custom.custom_component.component import Component
-    from langflow.custom.custom_component.custom_component import CustomComponent
+    from lfx.custom.custom_component.component import Component
+    from lfx.custom.custom_component.custom_component import CustomComponent
+    from lfx.graph.vertex.base import Vertex
+
     from langflow.events.event_manager import EventManager
-    from langflow.graph.vertex.base import Vertex
 
 
 def instantiate_class(
@@ -35,8 +36,14 @@ def instantiate_class(
         msg = "No base type provided for vertex"
         raise ValueError(msg)
 
+    from lfx.utils.flow_validation import resolve_trusted_code_for_build
+
     custom_params = get_params(vertex.params)
     code = custom_params.pop("code")
+    # Restricted-mode hardening (allow_custom_components=False): exec the server's trusted copy
+    # keyed by this code's hash, never the node's stored bytes, to close the 48-bit hash-collision
+    # RCE on the authenticated build path. No-op in permissive mode (the default).
+    code = resolve_trusted_code_for_build(code)
     class_object: type[CustomComponent | Component] = eval_custom_component_code(code)
     custom_component: CustomComponent | Component = class_object(
         _user_id=user_id,
@@ -108,7 +115,7 @@ def convert_kwargs(params):
 
 
 async def update_params_with_load_from_db_fields(
-    custom_component: CustomComponent,
+    custom_component: Component,
     params,
     load_from_db_fields,
     *,
@@ -122,21 +129,25 @@ async def update_params_with_load_from_db_fields(
             try:
                 key = await custom_component.get_variable(name=params[field], field=field, session=session)
             except ValueError as e:
-                if any(reason in str(e) for reason in ["User id is not set", "variable not found."]):
+                if "User id is not set" in str(e):
                     raise
-                logger.debug(str(e))
+                if "variable not found." in str(e) and not fallback_to_env_vars:
+                    raise
+                await logger.adebug(str(e))
                 key = None
 
             if fallback_to_env_vars and key is None:
-                key = os.getenv(params[field])
+                # safe_getenv refuses server-reserved / sensitive names so a tenant cannot
+                # name LANGFLOW_SECRET_KEY / DATABASE_URL etc. and exfiltrate it via the flow.
+                key = safe_getenv(params[field])
                 if key:
-                    logger.info(f"Using environment variable {params[field]} for {field}")
+                    await logger.ainfo(f"Using environment variable {params[field]} for {field}")
                 else:
-                    logger.error(f"Environment variable {params[field]} is not set.")
+                    await logger.aerror(f"Environment variable {params[field]} is not set.")
 
             params[field] = key if key is not None else None
             if key is None:
-                logger.warning(f"Could not get value for {field}. Setting it to None.")
+                await logger.awarning(f"Could not get value for {field}. Setting it to None.")
 
         return params
 
@@ -153,6 +164,7 @@ async def build_component(
 
 
 async def build_custom_component(params: dict, custom_component: CustomComponent):
+    params.pop("code", None)
     if "retriever" in params and hasattr(params["retriever"], "as_retriever"):
         params["retriever"] = params["retriever"].as_retriever()
 
@@ -189,9 +201,10 @@ async def build_custom_component(params: dict, custom_component: CustomComponent
     raw = post_process_raw(raw, artifact_type)
     artifact = {"repr": custom_repr, "raw": raw, "type": artifact_type}
 
-    if custom_component._vertex is not None:
-        custom_component._artifacts = {custom_component._vertex.outputs[0].get("name"): artifact}
-        custom_component._results = {custom_component._vertex.outputs[0].get("name"): build_result}
+    vertex = custom_component.get_vertex()
+    if vertex is not None:
+        custom_component.set_artifacts({vertex.outputs[0].get("name"): artifact})
+        custom_component.set_results({vertex.outputs[0].get("name"): build_result})
         return custom_component, build_result, artifact
 
     msg = "Custom component does not have a vertex"

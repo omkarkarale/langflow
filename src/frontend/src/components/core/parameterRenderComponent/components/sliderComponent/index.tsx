@@ -1,6 +1,7 @@
 import * as SliderPrimitive from "@radix-ui/react-slider";
 import clsx from "clsx";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { getMinOrMaxValue } from "@/components/core/parameterRenderComponent/components/sliderComponent/helpers/get-min-max-value";
 import type { InputProps } from "@/components/core/parameterRenderComponent/types";
 import { Case } from "@/shared/components/caseComponent";
@@ -49,7 +50,8 @@ export default function SliderComponent({
   sliderButtons = false,
   sliderButtonsOptions = DEFAULT_SLIDER_BUTTONS_OPTIONS,
   handleOnNewValue,
-}: InputProps<string[] | number[], SliderComponentType>): JSX.Element {
+  showParameter = true,
+}: InputProps<string[] | number[], SliderComponentType>): JSX.Element | null {
   const min = rangeSpec?.min ?? -2;
   const max = rangeSpec?.max ?? 2;
 
@@ -86,6 +88,22 @@ export default function SliderComponent({
 
     return null;
   };
+
+  const { t } = useTranslation();
+
+  const labelTranslations: Record<string, string> = {
+    Precise: t("slider.precise"),
+    Balanced: t("slider.balanced"),
+    Creative: t("slider.creative"),
+    Wild: t("slider.wild"),
+  };
+
+  const displayMinLabel = labelTranslations[minLabel] ?? minLabel;
+  const displayMaxLabel = labelTranslations[maxLabel] ?? maxLabel;
+  const displaySliderButtonsOptions = sliderButtonsOptions.map((opt) => ({
+    ...opt,
+    label: labelTranslations[opt.label] ?? opt.label,
+  }));
 
   const isDark = useDarkStore((state) => state.dark);
 
@@ -198,6 +216,10 @@ export default function SliderComponent({
 
   const ringClassInputClass = "ring-[1px] ring-slider-input-border";
 
+  if (!showParameter) {
+    return null;
+  }
+
   return (
     <div className={cn("w-full rounded-lg", editNode && "mt-3")}>
       <Case condition={!sliderButtons}>
@@ -247,10 +269,19 @@ export default function SliderComponent({
       </Case>
 
       <div className="flex cursor-default items-center justify-center">
+        {/*
+          Isolate the slider from React Flow's node interactions. Radix drives the
+          slider with pointer events, while the node selects on click and pans/drags
+          on pointer down. Without stopping propagation (and the nodrag/nopan opt-out
+          classes), the first interaction on an unselected node is consumed by node
+          selection and the value the user set is silently lost or mis-registered.
+        */}
         <SliderPrimitive.Root
-          className="relative flex h-5 w-full touch-none select-none items-center"
+          className="noflow nowheel nopan nodelete nodrag relative flex h-5 w-full touch-none select-none items-center"
           value={[valueAsNumber]}
           onValueChange={handleChange}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
           min={min}
           max={max}
           step={step}
@@ -290,7 +321,7 @@ export default function SliderComponent({
       {sliderButtons && (
         <div className="my-3">
           <div className={clsx("flex rounded-md bg-background")}>
-            {sliderButtonsOptions?.map((option) => (
+            {displaySliderButtonsOptions?.map((option) => (
               <button
                 key={option.id}
                 onClick={() => handleOptionClick(option.id)}
@@ -311,8 +342,8 @@ export default function SliderComponent({
       )}
 
       <SliderLabels
-        minLabel={minLabel}
-        maxLabel={maxLabel}
+        minLabel={displayMinLabel}
+        maxLabel={displayMaxLabel}
         minLabelIcon={minLabelIcon}
         maxLabelIcon={maxLabelIcon}
       />

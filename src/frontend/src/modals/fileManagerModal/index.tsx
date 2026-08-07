@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import useAlertStore from "@/stores/alertStore";
 import type { FileType } from "@/types/file_management";
 import { ForwardedIconComponent } from "../../components/common/genericIconComponent";
@@ -15,6 +16,7 @@ export default function FileManagerModal({
   files,
   types,
   isList,
+  allowFolderSelection = false,
 }: {
   children?: ReactNode;
   selectedFiles?: string[];
@@ -25,7 +27,9 @@ export default function FileManagerModal({
   files: FileType[];
   types: string[];
   isList?: boolean;
+  allowFolderSelection?: boolean;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [internalOpen, internalSetOpen] = useState(false);
 
   const setErrorData = useAlertStore((state) => state.setErrorData);
@@ -61,7 +65,7 @@ export default function FileManagerModal({
         onSubmit={() => {
           if (internalSelectedFiles.length === 0) {
             setErrorData({
-              title: "Please select at least one file",
+              title: t("fileManager.selectAtLeastOneFile"),
             });
             return;
           }
@@ -77,7 +81,7 @@ export default function FileManagerModal({
             <div className="rounded-md bg-muted p-1.5">
               <ForwardedIconComponent name="File" className="h-5 w-5" />
             </div>
-            My Files
+            {t("files.myFiles")}
           </span>
         </BaseModal.Header>
         <BaseModal.Content overflowHidden>
@@ -87,6 +91,8 @@ export default function FileManagerModal({
                 onUpload={handleUpload}
                 types={types}
                 isList={isList ?? false}
+                allowFolderSelection={allowFolderSelection}
+                existingFiles={files}
               />
             </div>
             <div className="flex flex-1 flex-col overflow-hidden">
@@ -103,7 +109,7 @@ export default function FileManagerModal({
 
         <BaseModal.Footer
           submit={{
-            label: `Select files`,
+            label: t("fileManager.selectFiles"),
             dataTestId: "select-files-modal-button",
           }}
         ></BaseModal.Footer>

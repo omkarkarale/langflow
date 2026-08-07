@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { useStickToBottomContext } from "use-stick-to-bottom";
 import ShadTooltip from "@/components/common/shadTooltipComponent";
 import { Button } from "@/components/ui/button";
-import { ICON_STROKE_WIDTH, SAVE_API_KEY_ALERT } from "@/constants/constants";
+import { ICON_STROKE_WIDTH } from "@/constants/constants";
 import { useGetMessagesPollingMutation } from "@/controllers/API/queries/messages/use-get-messages-polling";
 import {
   useGetGlobalVariables,
@@ -38,6 +40,7 @@ export function VoiceAssistant({
   flowId,
   setShowAudioInput,
 }: VoiceAssistantProps) {
+  const { t } = useTranslation();
   const [recordingTime, setRecordingTime] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
   const [_status, setStatus] = useState("");
@@ -58,6 +61,7 @@ export function VoiceAssistant({
   const isPlayingRef = useRef(false);
   const microphoneRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
 
   const soundDetected = useVoiceStore((state) => state.soundDetected);
   const _setIsVoiceAssistantActive = useVoiceStore(
@@ -114,7 +118,7 @@ export function VoiceAssistant({
   }, [globalVariables]);
 
   const hasElevenLabsApiKeyEnv = useMemo(() => {
-    return Boolean(process.env?.ELEVENLABS_API_KEY);
+    return Boolean(import.meta?.env?.ELEVENLABS_API_KEY);
   }, [variables, addKey]);
 
   useEffect(() => {
@@ -138,6 +142,7 @@ export function VoiceAssistant({
       microphoneRef,
       analyserRef,
       wsRef,
+      mediaStreamRef,
       setIsRecording,
       playNextAudioChunk,
       isPlayingRef,
@@ -154,6 +159,7 @@ export function VoiceAssistant({
       processorRef,
       analyserRef,
       wsRef,
+      mediaStreamRef,
       setIsRecording,
     );
   };
@@ -247,7 +253,7 @@ export function VoiceAssistant({
         {
           onSuccess: () => {
             setSuccessData({
-              title: SAVE_API_KEY_ALERT,
+              title: t("auth.saveApiKeySuccess"),
             });
             setAddKey(!addKey);
             setIsEditingOpenAIKey(false);
@@ -267,7 +273,7 @@ export function VoiceAssistant({
       {
         onSuccess: () => {
           setSuccessData({
-            title: SAVE_API_KEY_ALERT,
+            title: t("auth.saveApiKeySuccess"),
           });
           setAddKey(!addKey);
         },
@@ -288,20 +294,16 @@ export function VoiceAssistant({
     };
   }, [setShowAudioInput]);
 
-  const scrollToBottom = () => {
-    setTimeout(() => {
-      const chatContainer = document.querySelector(".chat-message-div");
-      if (chatContainer) {
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-      }
-    }, 300);
-  };
+  const { scrollToBottom } = useStickToBottomContext();
 
   const handleCloseAudioInput = () => {
     setIsRecording(false);
     stopRecording();
     setShowAudioInput(false);
-    scrollToBottom();
+    scrollToBottom({
+      animation: "smooth",
+      duration: 1000,
+    });
   };
 
   const handleSetShowSettingsModal = async (
@@ -392,10 +394,15 @@ export function VoiceAssistant({
           )}
         >
           <ShadTooltip
-            content={isRecording ? "Mute" : "Unmute"}
+            content={isRecording ? t("ioModal.mute") : t("ioModal.unmute")}
             delayDuration={500}
           >
-            <Button unstyled onClick={handleToggleRecording}>
+            <Button
+              unstyled
+              onClick={handleToggleRecording}
+              aria-label={isRecording ? t("ioModal.mute") : t("ioModal.unmute")}
+              aria-pressed={isRecording}
+            >
               <IconComponent
                 name={isRecording ? "Mic" : "MicOff"}
                 strokeWidth={ICON_STROKE_WIDTH}
@@ -441,7 +448,11 @@ export function VoiceAssistant({
             >
               {hasOpenAIAPIKey ? (
                 <>
-                  <Button data-testid="voice-assistant-settings-icon" unstyled>
+                  <Button
+                    data-testid="voice-assistant-settings-icon"
+                    unstyled
+                    aria-label={t("voice.audioSettings")}
+                  >
                     <IconComponent
                       name="Settings"
                       strokeWidth={ICON_STROKE_WIDTH}
@@ -458,6 +469,7 @@ export function VoiceAssistant({
                     size={"icon"}
                     data-testid="voice-assistant-settings-icon-without-openai"
                     className="h-8 w-8"
+                    aria-label={t("voice.openaiApiKeyLabel")}
                   >
                     <IconComponent
                       name="Key"
@@ -474,6 +486,7 @@ export function VoiceAssistant({
             unstyled
             onClick={handleCloseAudioInput}
             data-testid="voice-assistant-close-button"
+            aria-label={t("voiceAssistant.close")}
           >
             <IconComponent
               name="X"

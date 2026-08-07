@@ -5,11 +5,13 @@ import axios, {
 } from "axios";
 import * as fetchIntercept from "fetch-intercept";
 import { useEffect } from "react";
-import { Cookies } from "react-cookie";
 import { IS_AUTO_LOGIN } from "@/constants/constants";
 import { baseURL } from "@/customization/constants";
 import { useCustomApiHeaders } from "@/customization/hooks/use-custom-api-headers";
-import { customGetAccessToken } from "@/customization/utils/custom-get-access-token";
+import {
+  getAxiosWithCredentials,
+  getFetchCredentials,
+} from "@/customization/utils/get-fetch-credentials";
 import useAuthStore from "@/stores/authStore";
 import { useUtilityStore } from "@/stores/utilityStore";
 import { BuildStatus, type EventDeliveryType } from "../../constants/enums";
@@ -21,9 +23,35 @@ import { useLogout, useRefreshAccessToken } from "./queries/auth";
 // Create a new Axios instance
 const api: AxiosInstance = axios.create({
   baseURL: baseURL,
+  withCredentials: getAxiosWithCredentials(),
 });
 
-const _cookies = new Cookies();
+// URL fragments for auth-maintenance endpoints. A 401/403 on any of these
+// must NOT trigger the refresh-then-retry branch — that path itself goes
+// through this same axios instance, so retrying would recurse. Exported
+// for unit testing.
+export const AUTH_MAINTENANCE_PATHS = [
+  "/refresh",
+  "/login",
+  "/logout",
+  "/auto_login",
+];
+
+export function isAuthMaintenanceURL(url: string | undefined): boolean {
+  if (!url) return false;
+  return AUTH_MAINTENANCE_PATHS.some((path) => {
+    const idx = url.indexOf(path);
+    if (idx === -1) return false;
+    const charAfter = url[idx + path.length];
+    return (
+      charAfter === undefined ||
+      charAfter === "/" ||
+      charAfter === "?" ||
+      charAfter === "#"
+    );
+  });
+}
+
 function ApiInterceptor() {
   const autoLogin = useAuthStore((state) => state.autoLogin);
   const setErrorData = useAlertStore((state) => state.setErrorData);
@@ -36,7 +64,7 @@ function ApiInterceptor() {
   );
 
   const { mutate: mutationLogout } = useLogout();
-  const { mutate: mutationRenewAccessToken } = useRefreshAccessToken();
+  const { mutateAsync: mutationRenewAccessToken } = useRefreshAccessToken();
   const isLoginPage = location.pathname.includes("login");
   const customHeaders = useCustomApiHeaders();
 
@@ -47,13 +75,10 @@ function ApiInterceptor() {
   useEffect(() => {
     const unregister = fetchIntercept.register({
       request: (url, config) => {
-        const accessToken = customGetAccessToken();
+        // Browser automatically sends cookies with requests (including HttpOnly cookies)
+        // No need to manually add Authorization header from cookies
 
         if (!isExternalURL(url)) {
-          if (accessToken && !isAuthorizedURL(config?.url)) {
-            config.headers["Authorization"] = `Bearer ${accessToken}`;
-          }
-
           for (const [key, value] of Object.entries(customHeaders)) {
             config.headers[key] = value;
           }
@@ -83,25 +108,41 @@ function ApiInterceptor() {
           ) {
             return Promise.reject(error);
           }
+          // Auth-maintenance endpoints must not trigger refresh themselves.
+          // The refresh mutation uses this same axios instance, so if
+          // ``/refresh`` returns 401 (expired refresh token) it would
+          // re-enter this branch and recurse. Same for login/logout/
+          // auto_login. Reject the original failure and let the caller
+          // (typically the refresh mutation's catch block) drive logout.
+          if (isAuthMaintenanceURL(error?.config?.url)) {
+            await clearBuildVerticesState(error);
+            return Promise.reject(error);
+          }
           const stillRefresh = checkErrorCount();
           if (!stillRefresh) {
             return Promise.reject(error);
           }
 
-          await tryToRenewAccessToken(error);
-
-          const accessToken = customGetAccessToken();
-
-          if (!accessToken && error?.config?.url?.includes("login")) {
+          try {
+            await tryToRenewAccessToken(error);
+          } catch {
+            // Refresh failed (already logged + logout dispatched in the
+            // helper). Reject with the original error so callers see a
+            // clean failure instead of a swallowed undefined response.
+            await clearBuildVerticesState(error);
             return Promise.reject(error);
           }
+          await clearBuildVerticesState(error);
+          return await remakeRequest(error);
         }
 
         await clearBuildVerticesState(error);
 
-        if (!isAuthenticationError) {
-          return Promise.reject(error);
-        }
+        // Non-recoverable failure path: always reject so callers and
+        // React Query see a real error rather than an undefined response.
+        // This used to silently swallow auth errors under AUTO_LOGIN,
+        // producing infinite "Loading models…" spinners on fresh installs.
+        return Promise.reject(error);
       },
     );
 
@@ -148,7 +189,8 @@ function ApiInterceptor() {
       }
     };
 
-    // Request interceptor to add access token to every request
+    // Request interceptor to add custom headers
+    // Browser automatically sends cookies (including HttpOnly) with requests
     const requestInterceptor = api.interceptors.request.use(
       async (config) => {
         const controller = new AbortController();
@@ -158,12 +200,6 @@ function ApiInterceptor() {
           const error = e as Error;
           controller.abort(error.message);
           console.error(error.message);
-        }
-
-        const accessToken = customGetAccessToken();
-
-        if (accessToken && !isAuthorizedURL(config?.url)) {
-          config.headers["Authorization"] = `Bearer ${accessToken}`;
         }
 
         const currentOrigin = window.location.origin;
@@ -194,8 +230,8 @@ function ApiInterceptor() {
     };
   }, [accessToken, setErrorData, customHeaders, autoLogin]);
 
-  function checkErrorCount() {
-    if (isLoginPage) return;
+  function checkErrorCount(): boolean {
+    if (isLoginPage) return false;
 
     setAuthenticationErrorCount(authenticationErrorCount + 1);
 
@@ -209,24 +245,24 @@ function ApiInterceptor() {
   }
 
   async function tryToRenewAccessToken(error: AxiosError) {
-    if (isLoginPage) return;
+    if (isLoginPage) throw error;
     if (error.config?.headers) {
       for (const [key, value] of Object.entries(customHeaders)) {
         error.config.headers[key] = value;
       }
     }
-    mutationRenewAccessToken(undefined, {
-      onSuccess: async () => {
-        setAuthenticationErrorCount(0);
-        await remakeRequest(error);
-        setAuthenticationErrorCount(0);
-      },
-      onError: (error) => {
-        console.error(error);
+    try {
+      await mutationRenewAccessToken(undefined);
+      setAuthenticationErrorCount(0);
+    } catch (refreshError) {
+      console.error(refreshError);
+      const isNetworkError =
+        (refreshError as AxiosError)?.response === undefined;
+      if (!isNetworkError) {
         mutationLogout();
-        return Promise.reject("Authentication error");
-      },
-    });
+      }
+      throw refreshError;
+    }
   }
 
   async function clearBuildVerticesState(error) {
@@ -242,24 +278,11 @@ function ApiInterceptor() {
   async function remakeRequest(error: AxiosError) {
     const originalRequest = error.config as AxiosRequestConfig;
 
-    try {
-      const accessToken = customGetAccessToken();
-
-      if (!accessToken) {
-        throw new Error("Access token not found in cookies");
-      }
-
-      // Modify headers in originalRequest
-      originalRequest.headers = {
-        ...(originalRequest.headers as Record<string, string>), // Cast to suppress TypeScript error
-        Authorization: `Bearer ${accessToken}`,
-      };
-
-      const response = await axios.request(originalRequest);
-      return response.data; // Or handle the response as needed
-    } catch (err) {
-      throw err; // Throw the error if request fails again
-    }
+    // Return the full AxiosResponse so when this value resolves the
+    // outer interceptor promise, callers see a normal axios response and
+    // can read ``response.data`` as usual. Returning ``response.data``
+    // here would double-unwrap and produce ``undefined`` at the call site.
+    return axios.request(originalRequest);
   }
 
   return null;
@@ -269,6 +292,7 @@ export type StreamingRequestParams = {
   method: string;
   url: string;
   onData: (event: object) => Promise<boolean>;
+  onDataBatch?: (events: object[]) => Promise<boolean>;
   body?: object;
   onError?: (statusCode: number) => void;
   onNetworkError?: (error: Error) => void;
@@ -290,6 +314,7 @@ async function performStreamingRequest({
   method,
   url,
   onData,
+  onDataBatch,
   body,
   onError,
   onNetworkError,
@@ -301,13 +326,14 @@ async function performStreamingRequest({
     Connection: "close",
   };
 
-  const params = {
+  const params: RequestInit = {
     method: method,
     headers: headers,
     signal: buildController.signal,
+    credentials: getFetchCredentials(),
   };
   if (body) {
-    params["body"] = JSON.stringify(body);
+    params.body = JSON.stringify(body);
   }
   let current: string[] = [];
   const textDecoder = new TextDecoder();
@@ -332,25 +358,39 @@ async function performStreamingRequest({
       }
       const decodedChunk = textDecoder.decode(value);
       const all = decodedChunk.split("\n\n");
+
+      // Parse all complete events from this chunk first
+      const parsedEvents: object[] = [];
       for (const string of all) {
         if (string.endsWith("}")) {
           const allString = current.join("") + string;
-          let data: object;
           try {
             const sanitizedJson = sanitizeJsonString(allString);
-            data = JSON.parse(sanitizedJson);
+            parsedEvents.push(JSON.parse(sanitizedJson));
             current = [];
           } catch (_e) {
             current.push(string);
-            continue;
           }
+        } else {
+          current.push(string);
+        }
+      }
+
+      // Dispatch: batch callback processes all chunk events at once,
+      // otherwise fall back to per-event processing.
+      if (onDataBatch && parsedEvents.length > 0) {
+        const shouldContinue = await onDataBatch(parsedEvents);
+        if (!shouldContinue) {
+          buildController.abort();
+          return;
+        }
+      } else {
+        for (const data of parsedEvents) {
           const shouldContinue = await onData(data);
           if (!shouldContinue) {
             buildController.abort();
             return;
           }
-        } else {
-          current.push(string);
         }
       }
     }
@@ -362,9 +402,9 @@ async function performStreamingRequest({
         await onData(data);
       }
     }
-  } catch (e: any) {
+  } catch (e: unknown) {
     if (onNetworkError) {
-      onNetworkError(e);
+      onNetworkError(e as Error);
     } else {
       throw e;
     }

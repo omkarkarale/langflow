@@ -1,7 +1,6 @@
-import { test } from "@playwright/test";
-import * as dotenv from "dotenv";
-import path from "path";
+import { test } from "../../fixtures";
 import { awaitBootstrapTest } from "../../utils/await-bootstrap-test";
+import { loadDotenvIfLocal } from "../../utils/env/load-dotenv";
 import { initialGPTsetup } from "../../utils/initialGPTsetup";
 
 test(
@@ -12,11 +11,7 @@ test(
       !process?.env?.ANTHROPIC_API_KEY,
       "ANTHROPIC_API_KEY required to run this test",
     );
-
-    if (!process.env.CI) {
-      dotenv.config({ path: path.resolve(__dirname, "../../.env") });
-    }
-
+    loadDotenvIfLocal(__dirname);
     await page.goto("/");
     await awaitBootstrapTest(page);
 
@@ -25,19 +20,16 @@ test(
       .getByRole("heading", { name: "Portfolio Website Code Generator" })
       .click();
 
-    await page.waitForSelector('[data-testid="fit_view"]', {
+    await page.waitForSelector('[data-testid="canvas_controls_dropdown"]', {
       timeout: 100000,
     });
 
     await initialGPTsetup(page, {
       skipAdjustScreenView: true,
-      skipSelectGptModel: true,
     });
 
     await page.waitForTimeout(3000);
 
-    await page.getByTestId("dropdown_str_model_name").first().click();
-    await page.getByTestId("dropdown-option-0-container").first().click();
     await page.getByText("Loading Options").isVisible({ timeout: 5000 });
   },
 );

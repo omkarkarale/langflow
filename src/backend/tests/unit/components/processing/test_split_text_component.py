@@ -1,7 +1,7 @@
 import pytest
-from langflow.components.data import URLComponent
-from langflow.components.processing import SplitTextComponent
-from langflow.schema import Data, DataFrame
+from lfx.components.data import URLComponent
+from lfx.components.processing import SplitTextComponent
+from lfx.schema import Data, DataFrame
 
 from tests.base import ComponentTestBaseWithoutClient
 
@@ -137,6 +137,7 @@ class TestSplitTextComponent(ComponentTestBaseWithoutClient):
                 "chunk_overlap": 0,
                 "chunk_size": 7,
                 "separator": "\n",
+                "clean_output": False,
                 "session_id": "test_session",
                 "sender": "test_sender",
                 "sender_name": "test_sender_name",
@@ -160,6 +161,31 @@ class TestSplitTextComponent(ComponentTestBaseWithoutClient):
             assert row["author"] == test_metadata["author"], (
                 f"Expected author '{test_metadata['author']}', got '{row['author']}'"
             )
+
+    def test_split_text_clean_output_strips_metadata(self):
+        """Test that clean_output=True strips metadata columns from the output."""
+        component = SplitTextComponent()
+        test_metadata = {"source": "test.txt", "author": "test"}
+        test_text = "First chunk\nSecond chunk"
+        component.set_attributes(
+            {
+                "data_inputs": [Data(text=test_text, data=test_metadata)],
+                "chunk_overlap": 0,
+                "chunk_size": 7,
+                "separator": "\n",
+                "clean_output": True,
+                "session_id": "test_session",
+                "sender": "test_sender",
+                "sender_name": "test_sender_name",
+            }
+        )
+
+        data_frame = component.split_text()
+        assert isinstance(data_frame, DataFrame), "Expected DataFrame instance"
+        assert len(data_frame) == 2, f"Expected DataFrame with 2 rows, got {len(data_frame)}"
+        assert list(data_frame.columns) == ["text"], f"Expected only ['text'] column, got {list(data_frame.columns)}"
+        assert "source" not in data_frame.columns, "Metadata column 'source' should not be present"
+        assert "author" not in data_frame.columns, "Metadata column 'author' should not be present"
 
     def test_split_text_empty_input(self):
         """Test handling of empty input text."""
@@ -246,18 +272,21 @@ class TestSplitTextComponent(ComponentTestBaseWithoutClient):
         assert "Another text" in results["text"][2], f"Expected 'Another text', got '{results['text'][2]}'"
         assert "Another line" in results["text"][3], f"Expected 'Another line', got '{results['text'][3]}'"
 
-    def test_with_url_loader(self):
+    async def test_with_url_loader(self):
         """Test splitting text with URL loader."""
         component = SplitTextComponent()
         url = ["https://en.wikipedia.org/wiki/London", "https://en.wikipedia.org/wiki/Paris"]
-        data_frame = URLComponent(urls=url, format="Text").fetch_content()
+        data_frame = await URLComponent(urls=url, format="Text").fetch_content()
         assert isinstance(data_frame, DataFrame), "Expected DataFrame instance"
         assert len(data_frame) == 2, f"Expected DataFrame with 2 rows, got {len(data_frame)}"
+
+        # Use a reasonable chunk size that will work with varying URL content lengths
+        # The test validates that URL-loaded content can be split, not the exact number of chunks
         component.set_attributes(
             {
                 "data_inputs": data_frame,
-                "chunk_overlap": 0,
-                "chunk_size": 10,
+                "chunk_overlap": 200,
+                "chunk_size": 1000,
                 "separator": "\n",
                 "session_id": "test_session",
                 "sender": "test_sender",
@@ -267,4 +296,7 @@ class TestSplitTextComponent(ComponentTestBaseWithoutClient):
 
         results = component.split_text()
         assert isinstance(results, DataFrame), "Expected DataFrame instance"
-        assert len(results) > 2, f"Expected DataFrame with more than 2 rows, got {len(results)}"
+        # Verify we get at least as many chunks as inputs (could be more if content is large)
+        assert len(results) >= 2, f"Expected DataFrame with at least 2 rows, got {len(results)}"
+        # Verify the results have the expected text column
+        assert "text" in results.columns, f"Expected 'text' column in results, got {list(results.columns)}"

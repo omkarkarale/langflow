@@ -1,6 +1,7 @@
 import { DialogClose } from "@radix-ui/react-dialog";
 import * as Form from "@radix-ui/react-form";
 import React, { type ReactNode, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/button";
 import {
   Dialog,
@@ -56,14 +57,36 @@ const Trigger: React.FC<TriggerProps> = ({
   disable,
   className,
 }) => {
+  const childCount = React.Children.count(children);
+  const isEmptyFragment =
+    React.isValidElement(children) &&
+    children.type === React.Fragment &&
+    React.Children.count(
+      // children.props is unknown by default; narrow with a type guard
+      (children.props as { children?: React.ReactNode }).children,
+    ) === 0;
+
+  // Only show the trigger as “visible” when there is usable child content
+  const hasUsableChild = childCount > 0 && !isEmptyFragment;
+
+  // Ensure a valid element for Radix asChild (fragments can't receive props)
+  const triggerChild =
+    hasUsableChild &&
+    React.isValidElement(children) &&
+    children.type !== React.Fragment ? (
+      children
+    ) : (
+      <span />
+    );
+
   return (
     <DialogTrigger
       className={asChild ? "" : cn("w-full", className)}
-      hidden={children ? false : true}
+      hidden={!hasUsableChild}
       disabled={disable}
       asChild={asChild}
     >
-      {children}
+      {triggerChild}
     </DialogTrigger>
   );
 };
@@ -107,6 +130,7 @@ const Footer: React.FC<{
   centered?: boolean;
   className?: string;
 }> = ({ children, submit, close, centered, className }) => {
+  const { t } = useTranslation();
   return (
     <div
       className={cn(
@@ -119,14 +143,15 @@ const Footer: React.FC<{
       {submit ? (
         <div className="flex w-full items-center justify-between">
           {children ?? <div />}
-          <div className="flex items-center gap-3">
+          {/* p-2/-m-2 keeps layout unchanged while giving ring-offset-2 room to paint */}
+          <div className="-m-2 flex items-center gap-3 overflow-visible p-2">
             <DialogClose asChild>
               <Button
                 variant="outline"
                 type="button"
                 data-testid="btn-cancel-modal"
               >
-                Cancel
+                {t("modal.cancelButton")}
               </Button>
             </DialogClose>
             <Button
@@ -168,6 +193,7 @@ interface BaseModalProps {
   size?:
     | "notice"
     | "x-small"
+    | "x-small-h-full"
     | "retangular"
     | "smaller"
     | "small"
@@ -195,8 +221,13 @@ interface BaseModalProps {
   type?: "modal" | "dialog" | "full-screen";
   onSubmit?: () => void;
   onEscapeKeyDown?: (e: KeyboardEvent) => void;
+  onOpenAutoFocus?: (e: Event) => void;
   closeButtonClassName?: string;
   dialogContentWithouFixed?: boolean;
+  height?: string;
+  width?: string;
+  /** Accessible name for type="full-screen", which has no DialogTitle. */
+  ariaLabel?: string;
 }
 function BaseModal({
   className,
@@ -208,8 +239,12 @@ function BaseModal({
   type = "dialog",
   onSubmit,
   onEscapeKeyDown,
+  onOpenAutoFocus,
   closeButtonClassName,
   dialogContentWithouFixed = false,
+  height: customHeight,
+  width: customWidth,
+  ariaLabel,
 }: BaseModalProps) {
   const headerChild = React.Children.toArray(children).find(
     (child) => (child as React.ReactElement).type === Header,
@@ -226,6 +261,15 @@ function BaseModal({
 
   const { minWidth, height } = switchCaseModalSize(size);
 
+  // BaseModal.Header renders DialogTitle/Description inside its own component
+  // body, so DialogContent's child-tree scan cannot see them and would inject a
+  // VisuallyHidden "Dialog" title that steals aria-labelledby. Skip that
+  // fallback whenever a Header is present.
+  const hideTitleFallback = !!headerChild;
+  const hideDescriptionFallback =
+    React.isValidElement(headerChild) &&
+    !!(headerChild.props as { description?: unknown }).description;
+
   useEffect(() => {
     if (onChangeOpenModal) {
       onChangeOpenModal(open);
@@ -240,14 +284,19 @@ function BaseModal({
     </>
   );
 
+  const customStyle: React.CSSProperties = {
+    ...(customHeight ? { height: customHeight } : {}),
+    ...(customWidth ? { width: customWidth, minWidth: customWidth } : {}),
+  };
+
   const contentClasses = cn(
-    minWidth,
-    height,
+    !customWidth && minWidth,
+    !customHeight && height,
     "flex flex-col flex-1 overflow-hidden max-h-[98dvh]",
     className,
   );
 
-  const formClasses = "flex flex-col flex-1 gap-6 overflow-hidden";
+  const formClasses = "flex min-h-0 flex-col flex-1 gap-6";
 
   //UPDATE COLORS AND STYLE CLASSSES
   return (
@@ -255,10 +304,20 @@ function BaseModal({
       {type === "modal" ? (
         <Modal open={open} onOpenChange={setOpen}>
           {triggerChild}
-          <ModalContent className={contentClasses}>{modalContent}</ModalContent>
+          <ModalContent
+            className={contentClasses}
+            style={customHeight || customWidth ? customStyle : undefined}
+          >
+            {modalContent}
+          </ModalContent>
         </Modal>
       ) : type === "full-screen" ? (
-        <div className="min-h-full w-full flex-1 overflow-hidden">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={ariaLabel ?? "Dialog"}
+          className="min-h-full w-full flex-1 overflow-hidden"
+        >
           {modalContent}
         </div>
       ) : (
@@ -267,10 +326,13 @@ function BaseModal({
           {dialogContentWithouFixed ? (
             <DialogContentWithouFixed
               onClick={(e) => e.stopPropagation()}
-              onOpenAutoFocus={(event) => event.preventDefault()}
               onEscapeKeyDown={onEscapeKeyDown}
+              onOpenAutoFocus={onOpenAutoFocus}
               className={contentClasses}
               closeButtonClassName={closeButtonClassName}
+              style={customHeight || customWidth ? customStyle : undefined}
+              hideTitle={hideTitleFallback}
+              hideDescription={hideDescriptionFallback}
             >
               {onSubmit ? (
                 <Form.Root
@@ -289,10 +351,13 @@ function BaseModal({
           ) : (
             <DialogContent
               onClick={(e) => e.stopPropagation()}
-              onOpenAutoFocus={(event) => event.preventDefault()}
               onEscapeKeyDown={onEscapeKeyDown}
+              onOpenAutoFocus={onOpenAutoFocus}
               className={contentClasses}
               closeButtonClassName={closeButtonClassName}
+              style={customHeight || customWidth ? customStyle : undefined}
+              hideTitle={hideTitleFallback}
+              hideDescription={hideDescriptionFallback}
             >
               {onSubmit ? (
                 <Form.Root

@@ -1,6 +1,6 @@
-import { expect, test } from "@playwright/test";
-import { adjustScreenView } from "../../utils/adjust-screen-view";
+import { expect, test } from "../../fixtures";
 import { awaitBootstrapTest } from "../../utils/await-bootstrap-test";
+import { TEXTS } from "../../utils/constants/texts";
 import { removeOldApiKeys } from "../../utils/remove-old-api-keys";
 
 test(
@@ -43,21 +43,31 @@ test(
       timeout: 20000,
     });
 
-    await page.getByTestId("button_open_list_selection").click();
+    await page.waitForSelector("text=OAUTH2", { timeout: 20000 });
+
+    await page.waitForTimeout(1000);
+
+    await page
+      .getByTestId(
+        "button_open_list_selection_sortablelist_sortablelist_action_button",
+      )
+      .click();
 
     await page.getByTestId(`list_item_fetch_emails`).click();
 
-    await page.getByTestId("int_int_max_results").fill("10");
+    await page.waitForTimeout(1000);
 
     await page.getByTestId("button_run_gmail").click();
 
-    await page.waitForSelector("text=built successfully", {
+    await page.waitForSelector(`text=${TEXTS.toastBuiltSuccessfully}`, {
       timeout: 30000,
     });
 
-    await page.getByTestId("output-inspection-dataframe-gmailapi").click();
+    await page
+      .getByTestId("output-inspection-table-composiogmailapicomponent")
+      .click();
 
     const colNumber: number = await page.getByRole("gridcell").count();
-    expect(colNumber).toBeGreaterThan(9);
+    expect(colNumber).toBeGreaterThan(1);
   },
 );

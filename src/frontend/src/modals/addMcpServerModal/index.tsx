@@ -1,11 +1,9 @@
-import {
-  useIsFetching,
-  usePrefetchQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
+import { nanoid } from "nanoid";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { useLocation } from "react-router-dom";
 import { ForwardedIconComponent } from "@/components/common/genericIconComponent";
-import ShadTooltip from "@/components/common/shadTooltipComponent";
 import InputListComponent from "@/components/core/parameterRenderComponent/components/inputListComponent";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,13 +20,66 @@ import { useAddMCPServer } from "@/controllers/API/queries/mcp/use-add-mcp-serve
 import { usePatchMCPServer } from "@/controllers/API/queries/mcp/use-patch-mcp-server";
 import { CustomLink } from "@/customization/components/custom-link";
 import BaseModal from "@/modals/baseModal";
-import IOKeyPairInput from "@/modals/IOModal/components/IOFieldView/components/key-pair-input";
+import IOKeyPairInput, {
+  type KeyPairRow,
+} from "@/modals/IOModal/components/IOFieldView/components/key-pair-input";
+import IOKeyPairInputWithVariables from "@/modals/IOModal/components/IOFieldView/components/key-pair-input-with-variables";
 import type { MCPServerType } from "@/types/mcp";
 import { extractMcpServersFromJson } from "@/utils/mcpUtils";
 import { parseString } from "@/utils/stringManipulation";
-import { cn } from "@/utils/utils";
+
+const MCP_SETTINGS_PAGE = "/settings/mcp-servers";
 
 //TODO IMPLEMENT FORM LOGIC
+const objectToKeyPairRow = (
+  obj?: Record<string, string>,
+  oldData: KeyPairRow[] = [],
+) => {
+  const keys = Object.keys(obj || {});
+  if (!obj || keys.length === 0) {
+    return [{ key: "", value: "", id: nanoid(), error: false }];
+  }
+  return keys.map((key) => {
+    const oldItem = oldData.find((item) => item.key === key);
+    return (
+      oldItem || { key, value: obj[key] || "", id: nanoid(), error: false }
+    );
+  });
+};
+
+const keyPairRowToObject = (arr: KeyPairRow[]): Record<string, string> => {
+  return arr.reduce((obj, item) => {
+    if (!item.error && item.key) {
+      obj[item.key] = item.value;
+    }
+    return obj;
+  }, {});
+};
+
+const buildKeyPairPayload = (
+  rows: KeyPairRow[],
+  existing?: Record<string, string>,
+) => {
+  const nextValue = keyPairRowToObject(rows);
+  if (Object.keys(nextValue).length > 0) {
+    return nextValue;
+  }
+  if (existing && Object.keys(existing).length > 0) {
+    return {};
+  }
+  return undefined;
+};
+
+const buildArgsPayload = (args: string[], existing?: string[]) => {
+  const nextValue = args.filter((arg) => arg.trim() !== "");
+  if (nextValue.length > 0) {
+    return nextValue;
+  }
+  if (existing && existing.length > 0) {
+    return [];
+  }
+  return undefined;
+};
 
 export default function AddMcpServerModal({
   children,
@@ -43,13 +94,17 @@ export default function AddMcpServerModal({
   setOpen?: (a: boolean | ((o?: boolean) => boolean)) => void;
   onSuccess?: (server: string) => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [open, setOpen] =
     mySetOpen !== undefined && myOpen !== undefined
       ? [myOpen, mySetOpen]
       : useState(false);
 
+  const location = useLocation();
+  const isOnMcpSettingsPage = location.pathname === MCP_SETTINGS_PAGE;
+
   const [type, setType] = useState(
-    initialData ? (initialData.command ? "STDIO" : "SSE") : "JSON",
+    initialData ? (initialData.command ? "STDIO" : "HTTP") : "JSON",
   );
   const [jsonValue, setJsonValue] = useState("");
   const [error, setError] = useState<string | null>(
@@ -72,11 +127,11 @@ export default function AddMcpServerModal({
     setStdioName("");
     setStdioCommand("");
     setStdioArgs([""]);
-    setStdioEnv([]);
-    setSseName("");
-    setSseUrl("");
-    setSseEnv([]);
-    setSseHeaders([]);
+    setStdioEnv([{ key: "", value: "", id: nanoid(), error: false }]);
+    setHttpName("");
+    setHttpUrl("");
+    setHttpEnv([{ key: "", value: "", id: nanoid(), error: false }]);
+    setHttpHeaders([{ key: "", value: "", id: nanoid(), error: false }]);
   };
 
   // STDIO state
@@ -85,111 +140,152 @@ export default function AddMcpServerModal({
   const [stdioArgs, setStdioArgs] = useState<string[]>(
     initialData?.args || [""],
   );
-  const [stdioEnv, setStdioEnv] = useState<any>(initialData?.env || []);
+  const [stdioEnv, setStdioEnv] = useState<KeyPairRow[]>(
+    objectToKeyPairRow(initialData?.env) || [],
+  );
 
-  // SSE state
-  const [sseName, setSseName] = useState(initialData?.name || "");
-  const [sseUrl, setSseUrl] = useState(initialData?.url || "");
-  const [sseEnv, setSseEnv] = useState<any>(initialData?.env || []);
-  const [sseHeaders, setSseHeaders] = useState<any>(initialData?.headers || []);
+  // HTTP state
+  const [httpName, setHttpName] = useState(initialData?.name || "");
+  const [httpUrl, setHttpUrl] = useState(initialData?.url || "");
+  const [httpEnv, setHttpEnv] = useState<KeyPairRow[]>(
+    objectToKeyPairRow(initialData?.env) || [],
+  );
+  const [httpHeaders, setHttpHeaders] = useState<KeyPairRow[]>(
+    objectToKeyPairRow(initialData?.headers) || [],
+  );
 
   useEffect(() => {
     if (open) {
-      setType(initialData ? (initialData.command ? "STDIO" : "SSE") : "JSON");
+      setType(initialData ? (initialData.command ? "STDIO" : "HTTP") : "JSON");
       setError(null);
       setJsonValue("");
       setStdioName(initialData?.name || "");
       setStdioCommand(initialData?.command || "");
       setStdioArgs(initialData?.args || [""]);
-      setStdioEnv(initialData?.env || []);
-      setSseName(initialData?.name || "");
-      setSseUrl(initialData?.url || "");
-      setSseEnv(initialData?.env || []);
-      setSseHeaders(initialData?.headers || []);
+      setStdioEnv(objectToKeyPairRow(initialData?.env) || []);
+      setHttpName(initialData?.name || "");
+      setHttpUrl(initialData?.url || "");
+      setHttpEnv(objectToKeyPairRow(initialData?.env) || []);
+      setHttpHeaders(objectToKeyPairRow(initialData?.headers) || []);
     }
   }, [open]);
-
-  function parseEnvList(envList: any): Record<string, string> {
-    // envList is an array of objects with one key each
-    const env: Record<string, string> = {};
-    if (Array.isArray(envList)) {
-      envList.forEach((obj) => {
-        const key = Object.keys(obj)[0];
-        if (key && key.trim() !== "") {
-          env[key] = obj[key];
-        }
-      });
-    }
-    return env;
-  }
 
   async function submitForm() {
     setError(null);
     if (type === "STDIO") {
       if (!stdioName.trim() || !stdioCommand.trim()) {
-        setError("Name and command are required.");
+        setError(t("mcp.modal.errorNameCommandRequired"));
         return;
       }
-      const name = parseString(stdioName, [
-        "snake_case",
-        "no_blank",
-        "lowercase",
-      ]).slice(0, MAX_MCP_SERVER_NAME_LENGTH);
+      if (stdioEnv.some((item) => item.error)) {
+        setError(t("mcp.modal.errorDuplicateEnvKeys"));
+        return;
+      }
+      // The server name is the immutable identifier: it is the storage key and
+      // the URL path PATCH targets. When editing, always reuse the original
+      // name so the update hits the existing record. Re-deriving it from the
+      // input would let a name change retarget the request and create a
+      // duplicate server instead of updating the original.
+      const name = initialData
+        ? initialData.name
+        : parseString(stdioName, [
+            "mcp_name_case",
+            "no_blank",
+            "lowercase",
+          ]).slice(0, MAX_MCP_SERVER_NAME_LENGTH);
+      const argsPayload = buildArgsPayload(stdioArgs, initialData?.args);
+      const envPayload = buildKeyPairPayload(stdioEnv, initialData?.env);
       try {
         await modifyMCPServer({
           name,
           command: stdioCommand,
-          args: stdioArgs.filter((a) => a.trim() !== ""),
-          env: parseEnvList(stdioEnv),
+          ...(argsPayload !== undefined ? { args: argsPayload } : {}),
+          ...(envPayload !== undefined ? { env: envPayload } : {}),
         });
         if (!initialData) {
-          await queryClient.setQueryData(["useGetMCPServers"], (old: any) => {
-            return [...old, { name, toolsCount: 0 }];
-          });
+          await queryClient.setQueryData(
+            ["useGetMCPServers"],
+            (old: unknown) => {
+              return [
+                ...(Array.isArray(old) ? old : []),
+                { name, toolsCount: 0 },
+              ];
+            },
+          );
         }
         onSuccess?.(name);
         setOpen(false);
         setStdioName("");
         setStdioCommand("");
         setStdioArgs([""]);
-        setStdioEnv([]);
+        setStdioEnv([{ key: "", value: "", id: nanoid(), error: false }]);
         setError(null);
-      } catch (err: any) {
-        setError(err?.message || "Failed to add MCP server.");
+      } catch (err: unknown) {
+        setError(
+          err instanceof Error ? err.message : t("mcp.modal.errorFailedAdd"),
+        );
       }
       return;
     }
-    if (type === "SSE") {
-      if (!sseName.trim() || !sseUrl.trim()) {
-        setError("Name and URL are required.");
+    if (type === "HTTP") {
+      if (!httpName.trim() || !httpUrl.trim()) {
+        setError(t("mcp.modal.errorNameUrlRequired"));
         return;
       }
-      const name = parseString(sseName, [
-        "snake_case",
-        "no_blank",
-        "lowercase",
-      ]).slice(0, MAX_MCP_SERVER_NAME_LENGTH);
+      if (httpEnv.some((item) => item.error)) {
+        setError(t("mcp.modal.errorDuplicateEnvKeys"));
+        return;
+      }
+      if (httpHeaders.some((item) => item.error)) {
+        setError(t("mcp.modal.errorDuplicateHeaders"));
+        return;
+      }
+      // The server name is the immutable identifier: it is the storage key and
+      // the URL path PATCH targets. When editing, always reuse the original
+      // name so the update hits the existing record. Re-deriving it from the
+      // input would let a name change retarget the request and create a
+      // duplicate server instead of updating the original.
+      const name = initialData
+        ? initialData.name
+        : parseString(httpName, [
+            "mcp_name_case",
+            "no_blank",
+            "lowercase",
+          ]).slice(0, MAX_MCP_SERVER_NAME_LENGTH);
+      const envPayload = buildKeyPairPayload(httpEnv, initialData?.env);
+      const headersPayload = buildKeyPairPayload(
+        httpHeaders,
+        initialData?.headers,
+      );
       try {
         await modifyMCPServer({
           name,
-          env: parseEnvList(sseEnv),
-          url: sseUrl,
-          headers: parseEnvList(sseHeaders),
+          url: httpUrl,
+          ...(envPayload !== undefined ? { env: envPayload } : {}),
+          ...(headersPayload !== undefined ? { headers: headersPayload } : {}),
         });
         if (!initialData) {
-          await queryClient.setQueryData(["useGetMCPServers"], (old: any) => {
-            return [...old, { name, toolsCount: 0 }];
-          });
+          await queryClient.setQueryData(
+            ["useGetMCPServers"],
+            (old: unknown) => {
+              return [
+                ...(Array.isArray(old) ? old : []),
+                { name, toolsCount: 0 },
+              ];
+            },
+          );
         }
         onSuccess?.(name);
         setOpen(false);
-        setSseName("");
-        setSseUrl("");
-        setSseEnv([]);
-        setSseHeaders([]);
+        setHttpName("");
+        setHttpUrl("");
+        setHttpEnv([{ key: "", value: "", id: nanoid(), error: false }]);
+        setHttpHeaders([{ key: "", value: "", id: nanoid(), error: false }]);
         setError(null);
-      } catch (err: any) {
-        setError(err?.message || "Failed to add MCP server.");
+      } catch (err: unknown) {
+        setError(
+          err instanceof Error ? err.message : t("mcp.modal.errorFailedAdd"),
+        );
       }
       return;
     }
@@ -199,25 +295,27 @@ export default function AddMcpServerModal({
       servers = extractMcpServersFromJson(jsonValue).map((server) => ({
         ...server,
         name: parseString(server.name, [
-          "snake_case",
+          "mcp_name_case",
           "no_blank",
           "lowercase",
         ]).slice(0, MAX_MCP_SERVER_NAME_LENGTH),
       }));
-    } catch (e: any) {
-      setError(e.message || "Invalid input");
+    } catch (e: unknown) {
+      setError(
+        e instanceof Error ? e.message : t("mcp.modal.errorNoServerFound"),
+      );
       return;
     }
     if (servers.length === 0) {
-      setError("No valid MCP server found in the input.");
+      setError(t("mcp.modal.errorNoServerFound"));
       return;
     }
     try {
       await Promise.all(servers.map((server) => modifyMCPServer(server)));
       if (!initialData) {
-        await queryClient.setQueryData(["useGetMCPServers"], (old: any) => {
+        await queryClient.setQueryData(["useGetMCPServers"], (old: unknown) => {
           return [
-            ...old,
+            ...(Array.isArray(old) ? old : []),
             ...servers.map((server) => ({
               name: server.name,
               toolsCount: 0,
@@ -229,8 +327,12 @@ export default function AddMcpServerModal({
       setOpen(false);
       setJsonValue("");
       setError(null);
-    } catch (err: any) {
-      setError(err?.message || "Failed to add one or more MCP servers.");
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("mcp.modal.errorFailedAddMultiple"),
+      );
     }
   }
 
@@ -238,13 +340,13 @@ export default function AddMcpServerModal({
     <BaseModal
       open={open}
       setOpen={setOpen}
-      size="x-small"
+      size="x-small-h-full"
       onSubmit={submitForm}
-      className="!p-0"
+      className="!p-0 min-h-[250px] max-h-[75vh] flex-grow"
     >
       <BaseModal.Trigger>{children}</BaseModal.Trigger>
-      <BaseModal.Content className="flex flex-col justify-between overflow-hidden">
-        <div className="flex h-full w-full flex-col overflow-hidden">
+      <BaseModal.Content className="flex flex-1 flex-col overflow-hidden min-h-0">
+        <div className="flex flex-1 w-full flex-col overflow-hidden min-h-0">
           <div className="flex flex-col gap-3 p-4 tracking-normal">
             <div className="flex items-center gap-2 text-sm font-medium">
               <ForwardedIconComponent
@@ -252,185 +354,212 @@ export default function AddMcpServerModal({
                 className="h-4 w-4 text-primary"
                 aria-hidden="true"
               />
-              {initialData ? "Update MCP Server" : "Add MCP Server"}
+              {initialData
+                ? t("mcp.modal.updateTitle")
+                : t("mcp.modal.addTitle")}
             </div>
             <span className="text-mmd font-normal text-muted-foreground">
-              Save MCP Servers. Manage added servers in{" "}
-              <CustomLink className="underline" to="/settings/mcp-servers">
-                settings
-              </CustomLink>
-              .
+              {isOnMcpSettingsPage ? (
+                t("mcp.modal.descriptionSettings")
+              ) : (
+                <>
+                  {t("mcp.modal.descriptionFlow")}{" "}
+                  <CustomLink
+                    className="underline"
+                    to={MCP_SETTINGS_PAGE}
+                    onClick={() => setOpen(false)}
+                  >
+                    {t("mcp.modal.descriptionFlowLink")}
+                  </CustomLink>
+                  .
+                </>
+              )}
             </span>
           </div>
-          <div className="flex h-full w-full flex-col gap-4 overflow-hidden">
-            <Tabs
-              defaultValue={type}
-              onValueChange={changeType}
-              className="w-full"
+          <Tabs
+            defaultValue={type}
+            onValueChange={changeType}
+            className="flex flex-1 w-full flex-col overflow-hidden min-h-0"
+          >
+            <div className="px-4">
+              <TabsList className="mb-4 flex w-full gap-2">
+                <TabsTrigger
+                  className="flex-1"
+                  disabled={!!initialData && type !== "JSON"}
+                  data-testid="json-tab"
+                  value="JSON"
+                >
+                  {t("mcp.modal.tabJson")}
+                </TabsTrigger>
+                <TabsTrigger
+                  className="flex-1"
+                  data-testid="stdio-tab"
+                  disabled={!!initialData && type !== "STDIO"}
+                  value="STDIO"
+                >
+                  {t("mcp.modal.tabStdio")}
+                </TabsTrigger>
+                <TabsTrigger
+                  className="flex-1"
+                  data-testid="http-tab"
+                  disabled={!!initialData && type !== "HTTP"}
+                  value="HTTP"
+                >
+                  {t("mcp.modal.tabStreamableHttp")}
+                </TabsTrigger>
+              </TabsList>
+            </div>
+            <div
+              className="flex w-full flex-1 flex-col overflow-y-auto border-y p-4 min-h-0"
+              id="global-variable-modal-inputs"
             >
-              <div className="px-4">
-                <TabsList className="mb-4 grid w-full grid-cols-3">
-                  <TabsTrigger
-                    disabled={!!initialData && type !== "JSON"}
-                    data-testid="json-tab"
-                    value="JSON"
-                  >
-                    JSON
-                  </TabsTrigger>
-                  <TabsTrigger
-                    data-testid="stdio-tab"
-                    disabled={!!initialData && type !== "STDIO"}
-                    value="STDIO"
-                  >
-                    STDIO
-                  </TabsTrigger>
-                  <TabsTrigger
-                    data-testid="sse-tab"
-                    disabled={!!initialData && type !== "SSE"}
-                    value="SSE"
-                  >
-                    SSE
-                  </TabsTrigger>
-                </TabsList>
-              </div>
-              <div
-                className="relative flex max-h-[280px] min-h-[280px] w-full flex-1 flex-col gap-2 overflow-y-auto border-y p-4 pt-2"
-                id="global-variable-modal-inputs"
+              {error && (
+                <div className="mb-4 rounded-md bg-destructive/10 px-4 py-2 text-xs font-medium text-destructive">
+                  {error}
+                </div>
+              )}
+              <TabsContent value="JSON" className="flex flex-col p-0 m-0">
+                <Label className="!text-mmd mb-2">
+                  {t("mcp.modal.jsonTabLabel")}
+                </Label>
+                <Textarea
+                  value={jsonValue}
+                  data-testid="json-input"
+                  onChange={(e) => setJsonValue(e.target.value)}
+                  className="min-h-[300px] font-mono text-mmd resize-none"
+                  placeholder={t("mcp.modal.jsonPlaceholder")}
+                  disabled={isPending}
+                />
+              </TabsContent>
+              <TabsContent
+                value="STDIO"
+                className="flex flex-1 flex-col h-full p-0 m-0"
               >
-                {error && (
-                  <ShadTooltip content={error}>
-                    <div
-                      className={cn(
-                        "absolute right-4 top-4 truncate text-xs font-medium text-red-500",
-                        type === "JSON" ? "w-3/5" : "w-4/5",
-                      )}
-                    >
-                      {error}
-                    </div>
-                  </ShadTooltip>
-                )}
-                <TabsContent value="JSON">
+                <div className="flex h-full flex-col gap-4">
                   <div className="flex flex-col gap-2">
-                    <Label className="!text-mmd">Paste in JSON config</Label>
-                    <Textarea
-                      value={jsonValue}
-                      data-testid="json-input"
-                      onChange={(e) => setJsonValue(e.target.value)}
-                      className="min-h-[225px] font-mono text-mmd"
-                      placeholder="Paste in JSON config to add server"
+                    <Label className="flex items-start gap-1 !text-mmd">
+                      {t("mcp.modal.fieldName")}{" "}
+                      <span className="text-destructive">*</span>
+                    </Label>
+                    <Input
+                      value={stdioName}
+                      onChange={(e) => setStdioName(e.target.value)}
+                      placeholder={t("mcp.modal.placeholderServerName")}
+                      data-testid="stdio-name-input"
+                      disabled={isPending || !!initialData}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label className="flex items-start gap-1 !text-mmd">
+                      {t("mcp.modal.fieldCommand")}
+                      <span className="text-destructive">*</span>
+                    </Label>
+                    <Input
+                      value={stdioCommand}
+                      onChange={(e) => setStdioCommand(e.target.value)}
+                      placeholder={t("mcp.modal.placeholderCommand")}
+                      data-testid="stdio-command-input"
                       disabled={isPending}
                     />
                   </div>
-                </TabsContent>
-                <TabsContent value="STDIO">
-                  <div className="flex flex-col gap-4">
-                    <div className="flex flex-col gap-2">
-                      <Label className="flex items-start gap-1 !text-mmd">
-                        Name <span className="text-red-500">*</span>
-                      </Label>
-                      <Input
-                        value={stdioName}
-                        onChange={(e) => setStdioName(e.target.value)}
-                        placeholder="Type server name..."
-                        data-testid="stdio-name-input"
-                        disabled={isPending}
-                      />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <Label className="flex items-start gap-1 !text-mmd">
-                        Command<span className="text-red-500">*</span>
-                      </Label>
-                      <Input
-                        value={stdioCommand}
-                        onChange={(e) => setStdioCommand(e.target.value)}
-                        placeholder="Type command..."
-                        data-testid="stdio-command-input"
-                        disabled={isPending}
-                      />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <Label className="!text-mmd">Arguments</Label>
-                      <InputListComponent
-                        value={stdioArgs}
-                        handleOnNewValue={({ value }) => setStdioArgs(value)}
-                        disabled={isPending}
-                        placeholder="Type argument..."
-                        listAddLabel="Add Argument"
-                        editNode={false}
-                        id="stdio-args"
-                        data-testid="stdio-args-input"
-                      />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <Label className="!text-mmd">Environment Variables</Label>
-                      <IOKeyPairInput
-                        value={stdioEnv}
-                        onChange={setStdioEnv}
-                        duplicateKey={false}
-                        isList={true}
-                        isInputField={true}
-                        testId="stdio-env"
-                      />
-                    </div>
+                  <div className="flex flex-col gap-2">
+                    <Label className="!text-mmd">
+                      {t("mcp.modal.fieldArguments")}
+                    </Label>
+                    <InputListComponent
+                      value={stdioArgs}
+                      handleOnNewValue={({ value }) => setStdioArgs(value)}
+                      disabled={isPending}
+                      placeholder={t("mcp.modal.placeholderArgument")}
+                      listAddLabel={t("mcp.modal.addArgumentButton")}
+                      editNode={false}
+                      id="stdio-args"
+                      data-testid="stdio-args-input"
+                    />
                   </div>
-                </TabsContent>
-                <TabsContent value="SSE">
-                  <div className="flex flex-col gap-4">
-                    <div className="flex flex-col gap-2">
-                      <Label className="flex items-start gap-1 !text-mmd">
-                        Name<span className="text-red-500">*</span>
-                      </Label>
-                      <Input
-                        value={sseName}
-                        onChange={(e) => setSseName(e.target.value)}
-                        placeholder="Name"
-                        data-testid="sse-name-input"
-                        disabled={isPending}
-                      />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <Label className="flex items-start gap-1 !text-mmd">
-                        SSE URL<span className="text-red-500">*</span>
-                      </Label>
-                      <Input
-                        value={sseUrl}
-                        onChange={(e) => setSseUrl(e.target.value)}
-                        placeholder="SSE URL"
-                        data-testid="sse-url-input"
-                        disabled={isPending}
-                      />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <Label className="!text-mmd">Headers</Label>
-                      <IOKeyPairInput
-                        value={sseHeaders}
-                        onChange={setSseHeaders}
-                        duplicateKey={false}
-                        isList={true}
-                        isInputField={true}
-                        testId="sse-headers"
-                      />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <Label className="!text-mmd">Environment Variables</Label>
-                      <IOKeyPairInput
-                        value={sseEnv}
-                        onChange={setSseEnv}
-                        duplicateKey={false}
-                        isList={true}
-                        isInputField={true}
-                        testId="sse-env"
-                      />
-                    </div>
+                  <div className="flex flex-col gap-2">
+                    <Label className="!text-mmd">
+                      {t("mcp.modal.fieldEnvironmentVariables")}
+                    </Label>
+                    <IOKeyPairInput
+                      value={stdioEnv}
+                      onChange={setStdioEnv}
+                      duplicateKey={false}
+                      isList={true}
+                      isInputField={true}
+                      testId="stdio-env"
+                    />
                   </div>
-                </TabsContent>
-              </div>
-            </Tabs>
-          </div>
+                </div>
+              </TabsContent>
+              <TabsContent
+                value="HTTP"
+                className="flex flex-1 flex-col h-full p-0 m-0"
+              >
+                <div className="flex h-full flex-col gap-4">
+                  <div className="flex flex-col gap-2">
+                    <Label className="flex items-start gap-1 !text-mmd">
+                      {t("mcp.modal.fieldName")}
+                      <span className="text-destructive">*</span>
+                    </Label>
+                    <Input
+                      value={httpName}
+                      onChange={(e) => setHttpName(e.target.value)}
+                      placeholder={t("mcp.modal.placeholderHttpName")}
+                      data-testid="http-name-input"
+                      disabled={isPending || !!initialData}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label className="flex items-start gap-1 !text-mmd">
+                      {t("mcp.modal.fieldStreamableUrl")}
+                      <span className="text-destructive">*</span>
+                    </Label>
+                    <Input
+                      value={httpUrl}
+                      onChange={(e) => setHttpUrl(e.target.value)}
+                      placeholder={t("mcp.modal.placeholderHttpUrl")}
+                      data-testid="http-url-input"
+                      disabled={isPending}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label className="!text-mmd">
+                      {t("mcp.modal.fieldHeaders")}
+                    </Label>
+                    <IOKeyPairInputWithVariables
+                      value={httpHeaders}
+                      onChange={setHttpHeaders}
+                      duplicateKey={false}
+                      isList={true}
+                      isInputField={true}
+                      testId="http-headers"
+                      enableGlobalVariables={true}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label className="!text-mmd">
+                      {t("mcp.modal.fieldEnvironmentVariables")}
+                    </Label>
+                    <IOKeyPairInput
+                      value={httpEnv}
+                      onChange={setHttpEnv}
+                      duplicateKey={false}
+                      isList={true}
+                      isInputField={true}
+                      testId="http-env"
+                    />
+                  </div>
+                </div>
+              </TabsContent>
+            </div>
+          </Tabs>
         </div>
-        <div className="flex justify-end gap-2 p-4">
+        <div className="flex shrink-0 justify-end gap-2 p-4">
           <Button variant="outline" size="sm" onClick={() => setOpen(false)}>
-            <span className="text-mmd font-normal">Cancel</span>
+            <span className="text-mmd font-normal">
+              {t("mcp.modal.cancelButton")}
+            </span>
           </Button>
           <Button
             size="sm"
@@ -439,7 +568,9 @@ export default function AddMcpServerModal({
             loading={isPending}
           >
             <span className="text-mmd">
-              {initialData ? "Update Server" : "Add Server"}
+              {initialData
+                ? t("mcp.modal.updateServerButton")
+                : t("mcp.modal.addServerButton")}
             </span>
           </Button>
         </div>

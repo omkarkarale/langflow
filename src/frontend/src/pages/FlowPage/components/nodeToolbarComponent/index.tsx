@@ -1,7 +1,7 @@
 import { useUpdateNodeInternals } from "@xyflow/react";
 import _, { cloneDeep } from "lodash";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { countHandlesFn } from "@/CustomNodes/helpers/count-handles";
+import { useTranslation } from "react-i18next";
 import { mutateTemplate } from "@/CustomNodes/helpers/mutate-template";
 import useHandleOnNewValue from "@/CustomNodes/hooks/use-handle-new-value";
 import useHandleNodeClass from "@/CustomNodes/hooks/use-handle-node-class";
@@ -10,6 +10,7 @@ import ToggleShadComponent from "@/components/core/parameterRenderComponent/comp
 import { Button } from "@/components/ui/button";
 import { usePostTemplateValue } from "@/controllers/API/queries/nodes/use-post-template-value";
 import { usePostRetrieveVertexOrder } from "@/controllers/API/queries/vertex";
+import { ENABLE_INSPECTION_PANEL } from "@/customization/feature-flags";
 import { customOpenNewTab } from "@/customization/utils/custom-open-new-tab";
 import useAddFlow from "@/hooks/flows/use-add-flow";
 import type { APIClassType } from "@/types/api";
@@ -26,6 +27,7 @@ import useFlowStore from "../../../../stores/flowStore";
 import useFlowsManagerStore from "../../../../stores/flowsManagerStore";
 import { useShortcutsStore } from "../../../../stores/shortcuts";
 import { useStoreStore } from "../../../../stores/storeStore";
+import { useUtilityStore } from "../../../../stores/utilityStore";
 import type { nodeToolbarPropsType } from "../../../../types/components";
 import type { FlowType } from "../../../../types/flow";
 import {
@@ -50,15 +52,17 @@ const NodeToolbarComponent = memo(
     numberOfOutputHandles,
     showNode,
     name = "code",
-    onCloseAdvancedModal,
     updateNode,
     isOutdated,
     isUserEdited,
     hasBreakingChange,
     setOpenShowMoreOptions,
-  }: nodeToolbarPropsType): JSX.Element => {
+    openDropdownOnRightClick = false,
+  }: nodeToolbarPropsType & {
+    openDropdownOnRightClick?: boolean;
+  }): JSX.Element => {
+    const { t } = useTranslation();
     const version = useDarkStore((state) => state.version);
-    const [showModalAdvanced, setShowModalAdvanced] = useState(false);
     const [showconfirmShare, setShowconfirmShare] = useState(false);
     const [showOverrideModal, setShowOverrideModal] = useState(false);
     const [flowComponent, setFlowComponent] = useState<FlowType>(
@@ -75,6 +79,7 @@ const NodeToolbarComponent = memo(
     const shortcuts = useShortcutsStore((state) => state.shortcuts);
     const currentFlowId = useFlowsManagerStore((state) => state.currentFlowId);
     const [openModal, setOpenModal] = useState(false);
+    const [dropdownOpen, setDropdownOpen] = useState(false);
     const frozen = data.node?.frozen ?? false;
     const updateNodeInternals = useUpdateNodeInternals();
 
@@ -103,11 +108,16 @@ const NodeToolbarComponent = memo(
       Object.values(flow).includes(data.node?.display_name!),
     );
 
+    const allowCustomComponents = useUtilityStore(
+      (state) => state.allowCustomComponents,
+    );
+
     const nodeLength = useMemo(() => getNodeLength(data), [data]);
     const hasCode = useMemo(
       () => Object.keys(data.node!.template).includes("code"),
       [data.node],
     );
+    const canEditCode = hasCode && allowCustomComponents;
     const isGroup = useMemo(
       () => (data.node?.flow ? true : false),
       [data.node],
@@ -119,11 +129,6 @@ const NodeToolbarComponent = memo(
     );
     const addFlow = useAddFlow();
 
-    const isMinimal = useMemo(
-      () => countHandlesFn(data) <= 1 && numberOfOutputHandles <= 1,
-      [data, numberOfOutputHandles],
-    );
-
     const [toolMode, setToolMode] = useState(
       () =>
         data.node?.tool_mode ||
@@ -134,6 +139,12 @@ const NodeToolbarComponent = memo(
     );
 
     useEffect(() => {
+      // Keep the optimistic toggle state while the server rebuilds the node.
+      // Other in-flight field refreshes can update the same node first with
+      // its previous tool_mode value; syncing that transient value makes the
+      // toggle appear to turn itself off.
+      if (postToolModeValue.isPending) return;
+
       if (data.node?.tool_mode !== undefined) {
         setToolMode(
           data.node?.tool_mode ||
@@ -143,7 +154,7 @@ const NodeToolbarComponent = memo(
             false,
         );
       }
-    }, [data.node?.tool_mode, data.node?.outputs]);
+    }, [data.node?.tool_mode, data.node?.outputs, postToolModeValue.isPending]);
 
     const { handleNodeClass: handleNodeClassHook } = useHandleNodeClass(
       data.id,
@@ -169,25 +180,12 @@ const NodeToolbarComponent = memo(
       );
     };
 
+    // LE-1810: any component can be minimized, regardless of how many
+    // input/output handles it has.
     const handleMinimize = useCallback(() => {
-      if (isMinimal || !showNode) {
-        setShowNode(!showNode);
-        updateNodeInternals(data.id);
-        return;
-      }
-      setNoticeData({
-        title:
-          "Minimization only available for components with one handle or fewer.",
-      });
-    }, [isMinimal, showNode, data.id]);
-
-    useEffect(() => {
-      if (!isMinimal && !showNode) {
-        setShowNode(true);
-        updateNodeInternals(data.id);
-        return;
-      }
-    }, [isMinimal, showNode, data.id]);
+      setShowNode(!showNode);
+      updateNodeInternals(data.id);
+    }, [showNode, data.id]);
 
     const handleungroup = useCallback(() => {
       if (isGroup) {
@@ -223,10 +221,15 @@ const NodeToolbarComponent = memo(
 
     const handleCodeModal = useCallback(() => {
       if (!hasCode) {
-        setNoticeData({ title: `You can not access ${data.id} code` });
+        setNoticeData({ title: t("node.cannotAccessCode", { id: data.id }) });
+        return;
+      }
+      if (!allowCustomComponents) {
+        setNoticeData({ title: t("node.customComponentEditingDisabled") });
+        return;
       }
       setOpenModal((state) => !state);
-    }, [hasCode, data.id]);
+    }, [hasCode, allowCustomComponents, data.id]);
 
     const saveComponent = useCallback(() => {
       if (isSaved) {
@@ -237,21 +240,52 @@ const NodeToolbarComponent = memo(
         flow: flowComponent,
         override: false,
       });
-      setSuccessData({ title: `${data.id} saved successfully` });
+      setSuccessData({ title: t("success.componentSaved", { id: data.id }) });
     }, [isSaved, data.id, flowComponent, addFlow]);
 
     const openDocs = useCallback(() => {
       if (data.node?.documentation) {
         return customOpenNewTab(data.node.documentation);
       }
-      setNoticeData({
-        title: `${data.id} docs is not available at the moment.`,
-      });
+      setNoticeData({ title: t("node.docsUnavailable", { id: data.id }) });
     }, [data.id, data.node?.documentation]);
+
+    const handleDownloadNode = useCallback(async () => {
+      try {
+        await downloadNode(flowComponent!);
+        setSuccessData({
+          title: t("node.downloadSuccess", {
+            name: flowComponent?.name || "Node",
+          }),
+        });
+      } catch (error) {
+        console.error("Error downloading node:", error);
+        const nodeName = flowComponent?.name || "Node";
+        setErrorData({
+          title: t("node.downloadFailed", { name: nodeName }),
+          list: [
+            error instanceof Error
+              ? error.message
+              : t("node.downloadUnknownError"),
+          ],
+        });
+      }
+    }, [flowComponent]);
+
+    const inspectionPanelVisible = useFlowStore(
+      (state) => state.inspectionPanelVisible,
+    );
+    const setInspectionPanelVisible = useFlowStore(
+      (state) => state.setInspectionPanelVisible,
+    );
+
+    const handleToggleInspectionPanel = useCallback(() => {
+      setInspectionPanelVisible(!inspectionPanelVisible);
+    }, [inspectionPanelVisible, setInspectionPanelVisible]);
 
     useShortcuts({
       showOverrideModal,
-      showModalAdvanced,
+      advancedSurfaceOpen: inspectionPanelVisible,
       openModal,
       showconfirmShare,
       FreezeAllVertices: () => {
@@ -260,7 +294,7 @@ const NodeToolbarComponent = memo(
       downloadFunction: () => downloadNode(flowComponent!),
       displayDocs: openDocs,
       saveComponent,
-      showAdvance: () => setShowModalAdvanced((state) => !state),
+      showAdvance: handleToggleInspectionPanel,
       handleCodeModal,
       shareComponent,
       ungroup: handleungroup,
@@ -269,11 +303,14 @@ const NodeToolbarComponent = memo(
       hasToolMode,
     });
 
+    // Open dropdown when right-clicked
     useEffect(() => {
-      if (!showModalAdvanced) {
-        onCloseAdvancedModal!(false);
+      if (openDropdownOnRightClick) {
+        setDropdownOpen(true);
+      } else {
+        setDropdownOpen(false);
       }
-    }, [showModalAdvanced]);
+    }, [openDropdownOnRightClick]);
 
     const setLastCopiedSelection = useFlowStore(
       (state) => state.setLastCopiedSelection,
@@ -291,7 +328,6 @@ const NodeToolbarComponent = memo(
       data.node?.display_name,
       data.node?.description,
       data.node?.template,
-      showModalAdvanced,
       showconfirmShare,
     ]);
 
@@ -302,6 +338,13 @@ const NodeToolbarComponent = memo(
         let nodes;
         setSelectedValue(event);
 
+        // Clear right-clicked state when user selects an option
+        if (openDropdownOnRightClick) {
+          const setRightClickedNodeId =
+            useFlowStore.getState().setRightClickedNodeId;
+          setRightClickedNodeId(null);
+        }
+
         switch (event) {
           case "save":
             saveComponent();
@@ -311,10 +354,7 @@ const NodeToolbarComponent = memo(
             FreezeAllVertices({ flowId: currentFlowId, stopNodeId: data.id });
             break;
           case "code":
-            setOpenModal(!openModal);
-            break;
-          case "advanced":
-            setShowModalAdvanced(true);
+            handleCodeModal();
             break;
           case "show":
             takeSnapshot();
@@ -324,7 +364,7 @@ const NodeToolbarComponent = memo(
             shareComponent();
             break;
           case "Download":
-            downloadNode(flowComponent!);
+            handleDownloadNode();
             break;
           case "SaveAll":
             addFlow({
@@ -381,7 +421,6 @@ const NodeToolbarComponent = memo(
         saveComponent,
         FreezeAllVertices,
         setOpenModal,
-        setShowModalAdvanced,
         handleMinimize,
         shareComponent,
         downloadNode,
@@ -416,11 +455,19 @@ const NodeToolbarComponent = memo(
 
     const handleOpenChange = (open: boolean) => {
       setOpenShowMoreOptions && setOpenShowMoreOptions(open);
+      setDropdownOpen(open);
+
+      // Clear right-clicked state when dropdown closes without selection
+      if (!open && openDropdownOnRightClick) {
+        const setRightClickedNodeId =
+          useFlowStore.getState().setRightClickedNodeId;
+        setRightClickedNodeId(null);
+      }
     };
 
     const isCustomComponent = useMemo(() => {
       const isCustom = data.type === "CustomComponent" && !data.node?.edited;
-      if (isCustom) {
+      if (isCustom && !inspectionPanelVisible) {
         data.node.edited = true;
       }
       return isCustom;
@@ -429,33 +476,37 @@ const NodeToolbarComponent = memo(
     const renderToolbarButtons = useMemo(
       () => (
         <>
-          {hasCode && (
+          {canEditCode && (
             <ToolbarButton
               className={isCustomComponent ? "animate-pulse-pink" : ""}
               icon="Code"
-              label="Code"
-              onClick={() => setOpenModal(true)}
+              label={t("nodeToolbar.code")}
+              onClick={handleCodeModal}
               shortcut={shortcuts.find((s) =>
                 s.name.toLowerCase().startsWith("code"),
               )}
               dataTestId="code-button-modal"
             />
           )}
-          {nodeLength > 0 && (
+          {/* Gated on the same flag the panel itself honors — without it the
+              button would render and do nothing (setInspectionPanelVisible
+              early-returns when the flag is off). */}
+          {ENABLE_INSPECTION_PANEL && (
             <ToolbarButton
               icon="SlidersHorizontal"
-              label="Controls"
-              onClick={() => setShowModalAdvanced(true)}
+              label={t("nodeToolbar.parameters")}
+              onClick={handleToggleInspectionPanel}
               shortcut={shortcuts.find((s) =>
                 s.name.toLowerCase().startsWith("advanced"),
               )}
-              dataTestId="edit-button-modal"
+              isActive={inspectionPanelVisible}
+              dataTestId="parameters-button"
             />
           )}
           {!hasToolMode && (
             <ToolbarButton
               icon="FreezeAll"
-              label="Freeze"
+              label={t("nodeToolbar.freeze")}
               dataTestId="freeze-all-button-modal"
               onClick={() => {
                 takeSnapshot();
@@ -467,7 +518,10 @@ const NodeToolbarComponent = memo(
               shortcut={shortcuts.find((s) =>
                 s.name.toLowerCase().startsWith("freeze"),
               )}
-              className={cn("node-toolbar-buttons", frozen && "text-blue-500")}
+              className={cn(
+                "node-toolbar-buttons",
+                frozen && "text-accent-indigo-foreground",
+              )}
             />
           )}
           {hasToolMode && (
@@ -482,47 +536,58 @@ const NodeToolbarComponent = memo(
               side="top"
             >
               <Button
+                asChild
                 className={cn(
                   "node-toolbar-buttons h-[2rem]",
                   toolMode && "text-primary",
                 )}
                 variant="ghost"
-                onClick={(event) => {
-                  event.preventDefault();
-                  takeSnapshot();
-                  handleSelectChange("toolMode");
-                }}
                 size="node-toolbar"
                 data-testid="tool-mode-button"
               >
-                <IconComponent
-                  name="Hammer"
-                  className={cn(
-                    "h-4 w-4 transition-all",
-                    toolMode ? "text-primary" : "",
-                  )}
-                />
-                <span className="text-mmd font-medium">Tool Mode</span>
-                <ToggleShadComponent
-                  value={toolMode}
-                  editNode={false}
-                  handleOnNewValue={() => {
+                <div
+                  className="flex items-center gap-2"
+                  role="button"
+                  tabIndex={0}
+                  onClick={(event) => {
+                    event.preventDefault();
                     takeSnapshot();
                     handleSelectChange("toolMode");
                   }}
-                  disabled={false}
-                  size="medium"
-                  showToogle={false}
-                  id="tool-mode-toggle"
-                />
+                >
+                  <IconComponent
+                    name="Hammer"
+                    className={cn(
+                      "h-4 w-4 transition-all",
+                      toolMode ? "text-primary" : "",
+                    )}
+                  />
+                  <span className="text-mmd font-medium">
+                    {t("nodeToolbar.toolMode")}
+                  </span>
+                  <ToggleShadComponent
+                    value={toolMode}
+                    editNode={false}
+                    handleOnNewValue={() => {
+                      takeSnapshot();
+                      handleSelectChange("toolMode");
+                    }}
+                    disabled={false}
+                    size="medium"
+                    showToogle={false}
+                    id="tool-mode-toggle"
+                  />
+                </div>
               </Button>
             </ShadTooltip>
           )}
         </>
       ),
       [
-        hasCode,
+        canEditCode,
+        isCustomComponent,
         nodeLength,
+        inspectionPanelVisible,
         hasToolMode,
         toolMode,
         data.id,
@@ -532,6 +597,7 @@ const NodeToolbarComponent = memo(
         shortcuts,
         frozen,
         handleSelectChange,
+        handleCodeModal,
       ],
     );
 
@@ -544,9 +610,13 @@ const NodeToolbarComponent = memo(
               onValueChange={handleSelectChange}
               value={selectedValue!}
               onOpenChange={handleOpenChange}
+              open={dropdownOpen}
             >
-              <SelectTrigger className="w-62">
-                <ShadTooltip content="Show More" side="top">
+              <SelectTrigger
+                className="w-62"
+                aria-label={t("nodeToolbar.showMore")}
+              >
+                <ShadTooltip content={t("nodeToolbar.showMore")} side="top">
                   <div data-testid="more-options-modal">
                     <Button
                       className="node-toolbar-buttons h-[2rem] w-[2rem]"
@@ -572,7 +642,7 @@ const NodeToolbarComponent = memo(
                       shortcuts.find((obj) => obj.name === "Save Component")
                         ?.shortcut!
                     }
-                    value={"Save"}
+                    value={t("nodeToolbar.save")}
                     icon={"SaveAll"}
                     dataTestId="save-button-modal"
                   />
@@ -583,7 +653,7 @@ const NodeToolbarComponent = memo(
                       shortcuts.find((obj) => obj.name === "Duplicate")
                         ?.shortcut!
                     }
-                    value={"Duplicate"}
+                    value={t("nodeToolbar.duplicate")}
                     icon={"Copy"}
                     dataTestId="copy-button-modal"
                   />
@@ -593,7 +663,7 @@ const NodeToolbarComponent = memo(
                     shortcut={
                       shortcuts.find((obj) => obj.name === "Copy")?.shortcut!
                     }
-                    value={"Copy"}
+                    value={t("nodeToolbar.copy")}
                     icon={"Clipboard"}
                     dataTestId="copy-button-modal"
                   />
@@ -608,7 +678,11 @@ const NodeToolbarComponent = memo(
                       style={
                         hasBreakingChange ? "text-accent-amber-foreground" : ""
                       }
-                      value={isUserEdited ? "Restore" : "Update"}
+                      value={
+                        isUserEdited
+                          ? t("nodeToolbar.restore")
+                          : t("nodeToolbar.update")
+                      }
                       icon={isUserEdited ? "RefreshCcwDot" : "CircleArrowUp"}
                       dataTestId="update-button-modal"
                     />
@@ -624,7 +698,7 @@ const NodeToolbarComponent = memo(
                         shortcuts.find((obj) => obj.name === "Component Share")
                           ?.shortcut!
                       }
-                      value={"Share"}
+                      value={t("nodeToolbar.share")}
                       icon={"Share3"}
                       dataTestId="share-button-modal"
                     />
@@ -639,33 +713,38 @@ const NodeToolbarComponent = memo(
                     shortcut={
                       shortcuts.find((obj) => obj.name === "Docs")?.shortcut!
                     }
-                    value={"Docs"}
+                    value={t("nodeToolbar.docs")}
                     icon={"FileText"}
                     dataTestId="docs-button-modal"
                   />
                 </SelectItem>
-                {(isMinimal || !showNode) && (
-                  <SelectItem
-                    value={"show"}
-                    data-testid={`${showNode ? "minimize" : "expand"}-button-modal`}
-                  >
-                    <ToolbarSelectItem
-                      shortcut={
-                        shortcuts.find((obj) => obj.name === "Minimize")
-                          ?.shortcut!
-                      }
-                      value={showNode ? "Minimize" : "Expand"}
-                      icon={showNode ? "Minimize2" : "Maximize2"}
-                    />
-                  </SelectItem>
-                )}
+
+                <SelectItem
+                  value={"show"}
+                  data-testid={`${
+                    showNode ? "minimize" : "expand"
+                  }-button-modal`}
+                >
+                  <ToolbarSelectItem
+                    shortcut={
+                      shortcuts.find((obj) => obj.name === "Minimize")
+                        ?.shortcut!
+                    }
+                    value={
+                      showNode
+                        ? t("nodeToolbar.minimize")
+                        : t("nodeToolbar.expand")
+                    }
+                    icon={showNode ? "Minimize2" : "Maximize2"}
+                  />
+                </SelectItem>
                 {isGroup && (
                   <SelectItem value="ungroup">
                     <ToolbarSelectItem
                       shortcut={
                         shortcuts.find((obj) => obj.name === "Group")?.shortcut!
                       }
-                      value={"Ungroup"}
+                      value={t("nodeToolbar.ungroup")}
                       icon={"Ungroup"}
                       dataTestId="group-button-modal"
                     />
@@ -682,7 +761,7 @@ const NodeToolbarComponent = memo(
                           obj.name.toLowerCase().startsWith("freeze"),
                         )?.shortcut!
                       }
-                      value={"Freeze"}
+                      value={t("nodeToolbar.freeze")}
                       icon={"FreezeAll"}
                       dataTestId="freeze-path-button"
                       style={`${frozen ? " text-ice" : ""} transition-all`}
@@ -695,24 +774,27 @@ const NodeToolbarComponent = memo(
                       shortcuts.find((obj) => obj.name === "Download")
                         ?.shortcut!
                     }
-                    value={"Download"}
+                    value={t("nodeToolbar.download")}
                     icon={"Download"}
                     dataTestId="download-button-modal"
                   />
                 </SelectItem>
-                <SelectItem value={"delete"} className="focus:bg-red-400/[.20]">
+                <SelectItem
+                  value={"delete"}
+                  className="focus:bg-destructive/[.20]"
+                >
                   <div className="font-red flex text-status-red">
                     <IconComponent
                       name="Trash2"
                       className="relative top-0.5 mr-2 h-4 w-4"
                     />{" "}
-                    <span className="">Delete</span>{" "}
+                    <span className="">{t("nodeToolbar.delete")}</span>{" "}
                     <span
                       className={`absolute right-2 top-2 flex items-center justify-center rounded-sm px-1 py-[0.2]`}
                     >
                       <IconComponent
                         name="Delete"
-                        className="h-4 w-4 stroke-2 text-red-400"
+                        className="h-4 w-4 stroke-2 text-destructive"
                       ></IconComponent>
                     </span>
                   </div>
@@ -722,12 +804,10 @@ const NodeToolbarComponent = memo(
           </div>
 
           <ToolbarModals
-            showModalAdvanced={showModalAdvanced}
             showconfirmShare={showconfirmShare}
             showOverrideModal={showOverrideModal}
             openModal={openModal}
             hasCode={hasCode}
-            setShowModalAdvanced={setShowModalAdvanced}
             setShowconfirmShare={setShowconfirmShare}
             setShowOverrideModal={setShowOverrideModal}
             setOpenModal={setOpenModal}

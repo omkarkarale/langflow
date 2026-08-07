@@ -12,6 +12,7 @@ import {
   PopoverContentWithoutPortal,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { useIsFlowReadOnly } from "@/contexts/permissionsContext";
 import useFlowStore from "@/stores/flowStore";
 import ShadTooltip from "../../../../components/common/shadTooltipComponent";
 import type { outputComponentType } from "../../../../types/components";
@@ -33,6 +34,8 @@ export default function OutputComponent({
   const nodeType = useFlowStore(
     (state) => state.nodes.find((node) => node.id === nodeId)?.data?.type,
   );
+  const currentFlowId = useFlowStore((state) => state.currentFlow?.id);
+  const isReadOnly = useIsFlowReadOnly(currentFlowId);
 
   const displayProxy = (children) => {
     if (proxy) {
@@ -49,7 +52,7 @@ export default function OutputComponent({
   const singleOutput = displayProxy(
     <span
       className={cn(
-        "px-2 py-1 text-[13px] font-medium",
+        "px-2 py-1 text-sm font-medium",
         isToolMode && "text-secondary",
         frozen ? "text-ice" : "",
       )}
@@ -76,10 +79,11 @@ export default function OutputComponent({
               unstyled
               role="combobox"
               ref={refButton}
-              className="no-focus-visible group flex items-center gap-2"
+              className="focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 group flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
               data-testid={`dropdown-output-${outputName?.toLowerCase()}`}
+              disabled={isReadOnly}
             >
-              <div className="flex items-center gap-1 truncate rounded-md px-2 py-1 text-[13px] font-medium group-hover:bg-primary/10">
+              <div className="flex items-center gap-1 truncate rounded-md px-2 py-1 text-sm font-medium group-hover:bg-primary/10">
                 {name}
                 <ForwardedIconComponent
                   name="ChevronDown"
@@ -102,7 +106,9 @@ export default function OutputComponent({
                       data-testid={`dropdown-item-output-${outputName?.toLowerCase()}-${output.display_name?.toLowerCase()}`}
                       className="cursor-pointer justify-between rounded-none px-3 py-2"
                       onSelect={() => {
-                        handleSelectOutput && handleSelectOutput(output);
+                        if (!isReadOnly) {
+                          handleSelectOutput?.(output);
+                        }
                       }}
                       value={output.name}
                     >

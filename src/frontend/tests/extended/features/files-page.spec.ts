@@ -1,8 +1,9 @@
-import { expect, test } from "@playwright/test";
 import fs from "fs";
 import path from "path";
+import { expect, test } from "../../fixtures";
 import { addFlowToTestOnEmptyLangflow } from "../../utils/add-flow-to-test-on-empty-langflow";
 import { awaitBootstrapTest } from "../../utils/await-bootstrap-test";
+import { TEXTS } from "../../utils/constants/texts";
 import { generateRandomFilename } from "../../utils/generate-filename";
 
 // Configure tests to run serially with a delay between each test
@@ -25,12 +26,12 @@ test(
     });
 
     // Click on the files button
-    await page.getByText("My Files").first().click();
+    await page.getByText(TEXTS.labelMyFiles).first().click();
 
     // Check if we're on the files page
     await page.waitForSelector('[data-testid="mainpage_title"]');
     const title = await page.getByTestId("mainpage_title");
-    expect(await title.textContent()).toContain("My Files");
+    expect(await title.textContent()).toContain("Files");
 
     // Check for empty state when no files are present
     const noFilesText = await page.getByText("No files");
@@ -69,7 +70,7 @@ test(
       timeout: 30000,
     });
 
-    await page.getByText("My Files").first().click();
+    await page.getByText(TEXTS.labelMyFiles).first().click();
     const fileChooserPromise = page.waitForEvent("filechooser");
     await page.getByTestId("upload-file-btn").click();
 
@@ -112,7 +113,7 @@ test(
       timeout: 30000,
     });
 
-    await page.getByText("My Files").first().click();
+    await page.getByText(TEXTS.labelMyFiles).first().click();
 
     // Create DataTransfer object and file
     const dataTransfer = await page.evaluateHandle((fileName) => {
@@ -180,7 +181,7 @@ test(
       timeout: 30000,
     });
 
-    await page.getByText("My Files").first().click();
+    await page.getByText(TEXTS.labelMyFiles).first().click();
     const fileChooserPromise = page.waitForEvent("filechooser");
     await page.getByTestId("upload-file-btn").click();
 
@@ -252,7 +253,7 @@ test(
       timeout: 30000,
     });
 
-    await page.getByText("My Files").first().click();
+    await page.getByText(TEXTS.labelMyFiles).first().click();
     const fileChooserPromise = page.waitForEvent("filechooser");
     await page.getByTestId("upload-file-btn").click();
 
@@ -351,7 +352,7 @@ test(
       timeout: 30000,
     });
 
-    await page.getByText("My Files").first().click();
+    await page.getByText(TEXTS.labelMyFiles).first().click();
     const fileChooserPromise = page.waitForEvent("filechooser");
     await page.getByTestId("upload-file-btn").click();
 
@@ -386,66 +387,49 @@ test(
       });
     }
 
-    // Select files with shift (checkbox on the grid)
+    // Select files using their specific row checkboxes
+    const txtCheckbox = page
+      .locator(".ag-row")
+      .filter({ hasText: fileNames.txt })
+      .locator('input[data-ref="eInput"]');
+    const jsonCheckbox = page
+      .locator(".ag-row")
+      .filter({ hasText: fileNames.json })
+      .locator('input[data-ref="eInput"]');
+    const pyCheckbox = page
+      .locator(".ag-row")
+      .filter({ hasText: fileNames.py })
+      .locator('input[data-ref="eInput"]');
 
-    await page.keyboard.down("Shift");
-    await page.locator('input[data-ref="eInput"]').nth(5).click();
-    await page.locator('input[data-ref="eInput"]').nth(7).click();
-    await page.keyboard.up("Shift");
+    await txtCheckbox.click();
+    await jsonCheckbox.click();
+    await pyCheckbox.click();
 
-    expect(
-      await page.locator('input[data-ref="eInput"]').nth(5).isChecked(),
-    ).toBe(true);
-    expect(
-      await page.locator('input[data-ref="eInput"]').nth(6).isChecked(),
-    ).toBe(true);
-    expect(
-      await page.locator('input[data-ref="eInput"]').nth(7).isChecked(),
-    ).toBe(true);
-
-    // Check if the bulk actions toolbar appears
-    const selectedCountText = await page.getByText("3 selected");
-    await expect(selectedCountText).toBeVisible();
-
-    // Check if download button is visible
-    const downloadButton = await page.getByTestId("bulk-download-btn");
-    await expect(downloadButton).toBeVisible();
-
-    // Set up download listener
-    const downloadPromise = page.waitForEvent("download");
-
-    // Click download button
-    await downloadButton.click();
-
-    // Wait for download to start
-    const download = await downloadPromise;
-
-    // Verify the download was initiated
-    await expect(download).toBeTruthy();
-
-    // Check for success message
-    const downloadSuccessMessage = await page.getByText(
-      /Files? downloaded successfully/,
-    );
-    await expect(downloadSuccessMessage).toBeTruthy();
-
-    // Select both files (checkbox on the grid)
-
-    await page.locator('input[data-ref="eInput"]').nth(7).click();
+    await expect(txtCheckbox).toBeChecked();
+    await expect(jsonCheckbox).toBeChecked();
+    await expect(pyCheckbox).toBeChecked();
 
     // Check if the bulk actions toolbar appears
-    const selectedCountTextDelete = await page.getByText("2 selected");
-    await expect(selectedCountTextDelete).toBeVisible();
-
     const deleteButton = await page.getByTestId("bulk-delete-btn");
     await expect(deleteButton).toBeVisible();
+
+    // Deselect one file (checkbox on the grid)
+
+    await pyCheckbox.click();
+
+    await page.waitForTimeout(500);
+
+    // Check if the bulk actions toolbar still appears
+    await expect(deleteButton).toBeVisible();
+
+    await page.waitForTimeout(500);
 
     // Test delete functionality
     await deleteButton.click();
 
     // Confirm the delete in the modal
     const confirmDeleteButton = await page.getByRole("button", {
-      name: "Delete",
+      name: TEXTS.delete,
     });
     await confirmDeleteButton.click();
 

@@ -39,11 +39,7 @@ import { GleanIcon } from "@/icons/Glean";
 import { GoogleIcon } from "@/icons/Google";
 import { GoogleDriveIcon } from "@/icons/GoogleDrive";
 import { GoogleGenerativeAIIcon } from "@/icons/GoogleGenerativeAI";
-import {
-  GradientInfinity,
-  GradientSave,
-  GradientUngroup,
-} from "@/icons/GradientSparkles";
+import { GradientInfinity, GradientUngroup } from "@/icons/GradientSparkles";
 import { GridHorizontalIcon } from "@/icons/GridHorizontal";
 import { GroqIcon } from "@/icons/Groq";
 import { GlobeOkIcon } from "@/icons/globe-ok";
@@ -52,12 +48,13 @@ import { HCDIcon } from "@/icons/HCD";
 import { HomeAssistantIcon } from "@/icons/HomeAssistant";
 import { HuggingFaceIcon } from "@/icons/HuggingFace";
 import { HackerNewsIcon } from "@/icons/hackerNews";
-import { WatsonxAiIcon } from "@/icons/IBMWatsonx";
+import { IBMIcon, WatsonxAiIcon, WatsonxOrchestrateIcon } from "@/icons/IBM";
 import { IcosaIcon } from "@/icons/Icosa";
 import { IFixIcon } from "@/icons/IFixIt";
 import { JSIcon } from "@/icons/JSicon";
 import { LangChainIcon } from "@/icons/LangChain";
 import { LangwatchIcon } from "@/icons/Langwatch";
+import { LiteLLMIcon } from "@/icons/LiteLLM";
 import { LMStudioIcon } from "@/icons/LMStudio";
 import { MaritalkIcon } from "@/icons/Maritalk";
 import { Mem0 } from "@/icons/Mem0";
@@ -77,6 +74,7 @@ import { OneDriveIcon } from "@/icons/OneDrive";
 import { OpenAiIcon } from "@/icons/OpenAi";
 import { OpenRouterIcon } from "@/icons/OpenRouter";
 import { OpenSearch } from "@/icons/OpenSearch";
+import { OracleIcon } from "@/icons/Oracle";
 import { PerplexityIcon } from "@/icons/Perplexity";
 import { PineconeIcon } from "@/icons/Pinecone";
 import { PostgresIcon } from "@/icons/Postgres";
@@ -106,18 +104,22 @@ import { UnstructuredIcon } from "@/icons/Unstructured";
 import { UpstashSvgIcon } from "@/icons/Upstash";
 import { VectaraIcon } from "@/icons/VectaraIcon";
 import { VertexAIIcon } from "@/icons/VertexAI";
+import { VLMRunIcon } from "@/icons/VLMRun";
+import { VllmIcon } from "@/icons/vLLM";
 import { WeaviateIcon } from "@/icons/Weaviate";
 import { WikipediaIcon } from "@/icons/Wikipedia";
 import { WolframIcon } from "@/icons/Wolfram";
 import { XAIIcon } from "@/icons/xAI";
-import { YouTubeSvgIcon as YouTubeIcon } from "@/icons/Youtube";
+import { YoutubeIcon as YouTubeIcon } from "@/icons/Youtube";
 import { ZepMemoryIcon } from "@/icons/ZepMemory";
+import { AgenticsIcon } from "./Agentics";
 import { JigsawStackIcon } from "./JigsawStack";
 import { WindsurfIcon } from "./Windsurf";
 
 // Export the eagerly loaded icons map
 export const eagerIconsMapping = {
   AIML: AIMLIcon,
+  Agentics: AgenticsIcon,
   AgentQL: AgentQLIcon,
   Airbyte: AirbyteIcon,
   Anthropic: AnthropicIcon,
@@ -162,7 +164,6 @@ export const eagerIconsMapping = {
   GoogleGenerativeAI: GoogleGenerativeAIIcon,
   Gmail: GmailIcon,
   GradientInfinity: GradientInfinity,
-  GradientSave: GradientSave,
   GradientUngroup: GradientUngroup,
   GridHorizontal: GridHorizontalIcon,
   Groq: GroqIcon,
@@ -170,12 +171,14 @@ export const eagerIconsMapping = {
   HCD: HCDIcon,
   HomeAssistant: HomeAssistantIcon,
   HuggingFace: HuggingFaceIcon,
+  IBM: IBMIcon,
   Icosa: IcosaIcon,
   IFixIt: IFixIcon,
   javascript: JSIcon,
   JigsawStack: JigsawStackIcon,
   LangChain: LangChainIcon,
   Langwatch: LangwatchIcon,
+  LiteLLM: LiteLLMIcon,
   LMStudio: LMStudioIcon,
   Maritalk: MaritalkIcon,
   Mem0: Mem0,
@@ -195,6 +198,7 @@ export const eagerIconsMapping = {
   OpenAI: OpenAiIcon,
   OpenRouter: OpenRouterIcon,
   OpenSearch: OpenSearch,
+  Oracle: OracleIcon,
   Perplexity: PerplexityIcon,
   Pinecone: PineconeIcon,
   Postgres: PostgresIcon,
@@ -222,10 +226,13 @@ export const eagerIconsMapping = {
   ThumbUpCustom: ThumbUpIconCustom,
   TwelveLabs: TwelveLabsIcon,
   Unstructured: UnstructuredIcon,
+  VLMRun: VLMRunIcon,
   Upstash: UpstashSvgIcon,
   Vectara: VectaraIcon,
   VertexAI: VertexAIIcon,
+  vLLM: VllmIcon,
   WatsonxAI: WatsonxAiIcon,
+  WatsonxOrchestrate: WatsonxOrchestrateIcon,
   Weaviate: WeaviateIcon,
   Wikipedia: WikipediaIcon,
   Windsurf: WindsurfIcon,

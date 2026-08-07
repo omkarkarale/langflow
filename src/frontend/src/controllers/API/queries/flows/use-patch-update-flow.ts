@@ -14,6 +14,9 @@ interface IPatchUpdateFlow {
   endpoint_name?: string | null | undefined;
   locked?: boolean | null | undefined;
   access_type?: "PUBLIC" | "PRIVATE" | "PROTECTED";
+  flow_type?: "agent" | "workflow";
+  a2a_enabled?: boolean;
+  a2a_card_overrides?: Record<string, unknown> | null;
 }
 
 export const usePatchUpdateFlow: useMutationFunctionType<
@@ -25,21 +28,26 @@ export const usePatchUpdateFlow: useMutationFunctionType<
   const PatchUpdateFlowFn = async ({
     id,
     ...payload
+    // biome-ignore lint/suspicious/noExplicitAny: legacy
   }: IPatchUpdateFlow): Promise<any> => {
     const response = await api.patch(`${getURL("FLOWS")}/${id}`, payload);
 
     return response.data;
   };
 
+  // biome-ignore lint/suspicious/noExplicitAny: legacy
   const mutation: UseMutationResult<IPatchUpdateFlow, any, IPatchUpdateFlow> =
     mutate(["usePatchUpdateFlow"], PatchUpdateFlowFn, {
-      onSettled: (res) => {
-        queryClient.refetchQueries({
-          queryKey: ["useGetFolders", res.folder_id],
-        }),
-          queryClient.refetchQueries({
-            queryKey: ["useGetFolder"],
-          });
+      onSettled: () => {
+        queryClient.invalidateQueries({
+          queryKey: ["useGetRefreshFlowsQuery"],
+        });
+        queryClient.invalidateQueries({
+          queryKey: ["useGetFolders"],
+        });
+        queryClient.invalidateQueries({
+          queryKey: ["useGetFolder"],
+        });
       },
       ...options,
     });
